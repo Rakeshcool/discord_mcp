@@ -18,6 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 async-trait = "=0.1.92"
+axum = { version = "=0.8.9", default-features = false, features = ["tokio", "http1"] }
 # MCP SDK. `server` (a default feature) already pulls in `schemars` and
 # `transport-async-rw`; the two transports below are added explicitly.
 rmcp = { version = "=3.11.0", features = [

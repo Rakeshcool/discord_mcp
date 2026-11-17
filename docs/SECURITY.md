@@ -105,6 +105,22 @@ session, and no database — the process holds nothing beyond the current call.
   (`discord://guilds`) are registered; no write or destructive tool exists in
   this build. Argument schemas use `deny_unknown_fields`, so an unknown argument
   is refused rather than ignored, and every tool is annotated `readOnlyHint`.
+- **HTTP authenticates before it serves.** The Streamable HTTP transport resolves
+  its bearer token from `http.auth_token_env` before binding, so a server that
+  cannot authenticate its callers never opens a socket. The token is compared in
+  constant time; a missing, malformed or wrong `Authorization` header all produce
+  the same `401`, so nothing is learned from the response. The token is a separate
+  credential from the bot token and never reaches Discord.
+- **`Host` and `Origin` are validated, and are not authentication.** `Host` must
+  be the configured bind (plus `localhost`/`127.0.0.1`/`::1` spellings when the
+  bind is loopback), which is what stops a DNS name resolving to `127.0.0.1` from
+  reaching the endpoint. A request that carries `Origin` must match
+  `http.allowed_origins`, and with the default empty list every `Origin`-bearing
+  request is refused rather than ignored. Both checks are anti-rebinding and
+  anti-CSRF; the bearer token remains the authentication.
+- **Body size and scope are bounded.** `http.max_request_bytes` caps a request
+  body, the endpoint exists only at `/mcp`, and `both` and `http` share one
+  `AppState` so the two transports cannot enforce different policy.
 - **Failures are legible, not opaque.** Policy denials and Discord errors are
   returned as `isError` tool results whose text begins with the stable error code
   (`POLICY_BLOCKED`, `INVALID_ARGUMENT`, …), because a protocol error would be
@@ -128,17 +144,30 @@ session, and no database — the process holds nothing beyond the current call.
 - The Streamable HTTP transport binds `127.0.0.1` by default and refuses to
   start on a non-loopback interface unless `http.allow_non_loopback = true`,
   `http.require_auth = true` and explicit `http.allowed_origins` are configured.
-- When HTTP lands it will also enforce `Host`/`Origin` validation, a request body
-  cap, per-request timeouts, a concurrency cap and session expiry. CORS is never
-  treated as authentication.
+  The bind guard is applied twice: configuration validation refuses the
+  combination, and the transport re-checks before binding.
+- The endpoint is `POST /mcp` only. Authentication is a bearer token compared in
+  constant time; `Host` and `Origin` are validated as described in §4; the body is
+  capped by `http.max_request_bytes`. Process tests prove that requests without a
+  token, with a wrong token, with a foreign `Host` and with a foreign `Origin` are
+  refused, and that a non-loopback bind missing its token exits with a
+  configuration error before listening.
+- CORS is never treated as authentication: allowing an origin only means the
+  browser preflight is not what blocks a request.
+- **TLS is not implemented.** A non-loopback bind is expected to sit behind a
+  reverse proxy that terminates TLS; the process serves plain HTTP on its bind
+  address and documents no trusted proxy headers. Session expiry, HTTP-level
+  concurrency limits and a health endpoint are not configured beyond the MCP SDK's
+  defaults.
 
 ## 7. Not yet implemented (tracked, not claimed)
 
 | Control | Phase |
 |---|---|
 | Draft/review prompts | not scheduled (optional in the specification) |
-| Streamable HTTP transport, bearer-token gate for non-loopback | Phase 5 |
-| `discord_send_message` with pre-flight policy and audit record | Phase 6 |
+| TLS termination and reverse-proxy deployment guide | Phase 6 |
+| HTTP session expiry, HTTP-level concurrency limits, health endpoint | Phase 6 |
+| `discord_send_message` with pre-flight policy and audit record | Phase 7 |
 | Correlation IDs on every tool execution | Phase 6 |
 | Release gate: full test suite, checksums, packaging | Phase 7 |
 

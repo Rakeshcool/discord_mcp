@@ -4,4 +4,5 @@
 //! phase and will share this crate's application state, so both transports
 //! enforce identical policy.
 
+pub mod http;
 pub mod stdio;

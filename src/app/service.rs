@@ -70,10 +70,16 @@ impl AppService {
             config.server.transport,
             TransportMode::Http | TransportMode::Both
         ) {
-            warnings.push(
-                "the Streamable HTTP transport is not implemented yet; only `stdio` serves in this build"
-                    .to_string(),
-            );
+            warnings.push(format!(
+                "Streamable HTTP will listen on {}:{} at /mcp (authentication {})",
+                config.http.host,
+                config.http.port,
+                if config.http.require_auth {
+                    "required"
+                } else {
+                    "DISABLED"
+                }
+            ));
         }
         if config.policy.write_enabled {
             warnings.push(format!(
@@ -100,9 +106,15 @@ impl AppService {
     pub async fn run(self) -> Result<(), AppError> {
         match self.state.config().server.transport {
             TransportMode::Stdio => crate::transport::stdio::serve(Arc::clone(&self.state)).await,
-            TransportMode::Http | TransportMode::Both => Err(AppError::configuration(
-                "the Streamable HTTP transport is not implemented in this build; set `server.transport = \"stdio\"`",
-            )),
+            TransportMode::Http => crate::transport::http::serve(Arc::clone(&self.state)).await,
+            // Both transports share one `AppState`, so they cannot diverge in
+            // what they enforce. Whichever stops first ends the process.
+            TransportMode::Both => {
+                tokio::select! {
+                    result = crate::transport::stdio::serve(Arc::clone(&self.state)) => result,
+                    result = crate::transport::http::serve(Arc::clone(&self.state)) => result,
+                }
+            }
         }
     }
 }

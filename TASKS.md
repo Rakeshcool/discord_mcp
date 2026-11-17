@@ -100,30 +100,48 @@ tests, not end to end, because no live bot is used.
 
 ## Phase 5 — STDIO transport
 
-- [ ] Integrate MCP SDK STDIO transport.
-- [ ] Ensure stdout contains protocol messages only.
-- [ ] Route all logs to stderr.
-- [ ] Handle stdin closure and Ctrl+C.
-- [ ] Test initialize, list tools, call tool, and shutdown.
-- [ ] Test launch through a Windows MCP desktop client.
-- [ ] Add sample STDIO client configuration to README.
+- [x] Integrate MCP SDK STDIO transport.
+- [x] Ensure stdout contains protocol messages only.
+- [x] Route all logs to stderr.
+- [x] Handle stdin closure and Ctrl+C.
+- [x] Test initialize, list tools, call tool, and shutdown.
+- [ ] Test launch through a Windows MCP desktop client. *(not verified: no desktop
+      client is installed here. The protocol is exercised as a child process over
+      real pipes, which is the same contract a desktop client uses)*
+- [x] Add sample STDIO client configuration to README.
 
 **Exit criteria:** A Windows MCP client can launch and use the server over STDIO without protocol contamination.
 
 ## Phase 6 — Streamable HTTP transport
 
-- [ ] Integrate MCP SDK Streamable HTTP transport.
-- [ ] Bind to `127.0.0.1` by default.
-- [ ] Implement authentication for non-loopback deployment.
-- [ ] Validate Host and Origin.
-- [ ] Configure body-size and request-time limits.
-- [ ] Configure concurrency and session expiry.
+- [x] Integrate MCP SDK Streamable HTTP transport.
+- [x] Bind to `127.0.0.1` by default.
+- [x] Implement authentication for non-loopback deployment.
+- [x] Validate Host and Origin.
+- [x] Configure body-size limits (`http.max_request_bytes`).
+- [ ] Configure request-time limits. *(Discord API calls already carry
+      `discord.request_timeout_seconds`; the HTTP transport itself relies on the
+      SDK's body cap and client disconnects rather than a server-side deadline)*
+- [ ] Configure concurrency and session expiry to the configured values.
+      *(`policy.max_concurrent_requests` caps Discord calls, and the SDK's own
+      session manager applies its defaults; `http.session_expiry_seconds` is not
+      yet handed to it)*
 - [ ] Add health/readiness endpoint if compatible with deployment design.
-- [ ] Test initialization, sessions, notifications, and disconnects.
-- [ ] Document TLS/reverse-proxy deployment.
-- [ ] Verify unauthenticated public binding is rejected.
+      *(not added: `/mcp` is the only route, and no deployment design asked for
+      one)*
+- [x] Test initialization over HTTP, including the refused cases.
+- [ ] Test sessions, notifications, and disconnects over HTTP.
+- [ ] Document TLS/reverse-proxy deployment. *(one paragraph in the README warns
+      that TLS is not implemented; a full proxy deployment guide is outstanding)*
+- [x] Verify unauthenticated public binding is rejected.
 
 **Exit criteria:** Streamable HTTP passes protocol tests and unsafe exposure is blocked.
+
+Met for exposure: process tests prove that a request with no token, a wrong token,
+a foreign `Host` and a foreign `Origin` are all refused, that a valid token is
+served, and that a non-loopback bind without its bearer token exits `2` before it
+binds. Session lifecycle (resumption, notifications, disconnect cleanup) is not
+yet covered end to end.
 
 ## Phase 7 — Controlled write operations
 

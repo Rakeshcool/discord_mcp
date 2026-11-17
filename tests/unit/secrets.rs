@@ -1,6 +1,6 @@
 //! Bot token shape validation and redacted `Debug`.
 
-use discord_mcp::security::secrets::BotToken;
+use discord_mcp::security::secrets::{BotToken, HttpToken};
 
 const VARIABLE: &str = "DISCORD_MCP_TEST_TOKEN";
 const VALID: &str = "MTAwMDAwMDAwMDAwMDAwMDAw.Ga4dEf.abcdefghijklmnopqrstuvwxyz0123456789AB";
@@ -54,4 +54,47 @@ fn unusable_values_are_rejected() {
             "expected `{expected}` in rejection message, got: {message}"
         );
     }
+}
+
+#[test]
+fn an_http_token_matches_only_itself() {
+    let token = HttpToken::from_source("DISCORD_MCP_HTTP_TOKEN", Some(VALID.to_string()))
+        .expect("a usable bearer token");
+
+    assert!(token.matches(VALID));
+    assert!(!token.matches(""));
+    assert!(!token.matches("not-the-token"));
+    assert!(!token.matches(&format!("{VALID}x")));
+    assert!(!token.matches(&VALID[..VALID.len() - 1]));
+}
+
+#[test]
+fn an_http_token_is_absent_or_unusable_rather_than_guessed() {
+    let missing = HttpToken::from_source("DISCORD_MCP_HTTP_TOKEN", None)
+        .expect_err("a missing token must not be invented");
+    assert!(missing.to_string().contains("DISCORD_MCP_HTTP_TOKEN"));
+
+    for value in [
+        "",
+        "short",
+        "has whitespace in it 0123456789",
+        " 0123456789abcdef ",
+    ] {
+        assert!(
+            HttpToken::from_source("DISCORD_MCP_HTTP_TOKEN", Some(value.to_string())).is_err(),
+            "`{value}` must be rejected"
+        );
+    }
+
+    assert!(HttpToken::from_source("DISCORD_MCP_HTTP_TOKEN", Some(VALID.to_string())).is_ok());
+}
+
+#[test]
+fn an_http_token_never_prints_its_value() {
+    let token = HttpToken::from_source("DISCORD_MCP_HTTP_TOKEN", Some(VALID.to_string()))
+        .expect("a usable bearer token");
+
+    let debug = format!("{token:?}");
+    assert_eq!(debug, "HttpToken(<redacted>)");
+    assert!(!debug.contains(VALID));
 }
