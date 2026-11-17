@@ -119,13 +119,16 @@ tests, not end to end, because no live bot is used.
 - [x] Implement authentication for non-loopback deployment.
 - [x] Validate Host and Origin.
 - [x] Configure body-size limits (`http.max_request_bytes`).
-- [ ] Configure request-time limits. *(Discord API calls already carry
-      `discord.request_timeout_seconds`; the HTTP transport itself relies on the
-      SDK's body cap and client disconnects rather than a server-side deadline)*
-- [ ] Configure concurrency and session expiry to the configured values.
-      *(`policy.max_concurrent_requests` caps Discord calls, and the SDK's own
-      session manager applies its defaults; `http.session_expiry_seconds` is not
-      yet handed to it)*
+- [x] Configure request-time limits. `http.request_timeout_seconds` bounds each
+      non-`GET` request from arrival to the end of its response body; the
+      long-lived standalone `GET` event stream is exempt because expiring it
+      would disconnect every subscribed session.
+- [x] Configure session expiry. `http.session_expiry_seconds` is the SDK session
+      manager's idle timeout (`SessionConfig::keep_alive`), replacing its 5-minute
+      default.
+- [ ] Configure HTTP-level concurrency. *(`policy.max_concurrent_requests` caps
+      Discord calls, which is where the expensive work is; the HTTP listener
+      itself has no connection or in-flight-request cap)*
 - [ ] Add health/readiness endpoint if compatible with deployment design.
       *(not added: `/mcp` is the only route, and no deployment design asked for
       one)*

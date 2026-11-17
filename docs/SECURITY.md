@@ -118,9 +118,17 @@ session, and no database — the process holds nothing beyond the current call.
   `http.allowed_origins`, and with the default empty list every `Origin`-bearing
   request is refused rather than ignored. Both checks are anti-rebinding and
   anti-CSRF; the bearer token remains the authentication.
-- **Body size and scope are bounded.** `http.max_request_bytes` caps a request
-  body, the endpoint exists only at `/mcp`, and `both` and `http` share one
-  `AppState` so the two transports cannot enforce different policy.
+- **Body size, request duration and session lifetime are bounded.**
+  `http.max_request_bytes` caps a request body. `http.request_timeout_seconds`
+  bounds each non-`GET` request from arrival to the last byte of its response
+  body — a timeout on the handler alone would be a placebo, because the MCP
+  service returns an SSE response as soon as it begins streaming and a stalled
+  tool call would keep an answered request alive indefinitely. The long-lived
+  `GET` event stream is exempt. `http.session_expiry_seconds` is handed to the
+  SDK session manager's idle timeout, so an abandoned session is torn down
+  instead of retaining a worker. The endpoint exists only at `/mcp`, and `both`
+  and `http` share one `AppState` so the two transports cannot enforce different
+  policy.
 - **Failures are legible, not opaque.** Policy denials and Discord errors are
   returned as `isError` tool results whose text begins with the stable error code
   (`POLICY_BLOCKED`, `INVALID_ARGUMENT`, …), because a protocol error would be
@@ -156,9 +164,9 @@ session, and no database — the process holds nothing beyond the current call.
   browser preflight is not what blocks a request.
 - **TLS is not implemented.** A non-loopback bind is expected to sit behind a
   reverse proxy that terminates TLS; the process serves plain HTTP on its bind
-  address and documents no trusted proxy headers. Session expiry, HTTP-level
-  concurrency limits and a health endpoint are not configured beyond the MCP SDK's
-  defaults.
+  address and documents no trusted proxy headers. There is no HTTP-level
+  concurrency cap and no health endpoint; Discord calls are capped by
+  `policy.max_concurrent_requests`.
 
 ## 7. Not yet implemented (tracked, not claimed)
 
@@ -166,7 +174,7 @@ session, and no database — the process holds nothing beyond the current call.
 |---|---|
 | Draft/review prompts | not scheduled (optional in the specification) |
 | TLS termination and reverse-proxy deployment guide | Phase 6 |
-| HTTP session expiry, HTTP-level concurrency limits, health endpoint | Phase 6 |
+| HTTP-level concurrency limit and health endpoint | Phase 6 |
 | `discord_send_message` with pre-flight policy and audit record | Phase 7 |
 | Correlation IDs on every tool execution | Phase 6 |
 | Release gate: full test suite, checksums, packaging | Phase 7 |

@@ -23,9 +23,9 @@ Streamable HTTP transport with loopback defaults, a bearer-token gate, `Host` an
 `Origin` validation, request-body caps and per-session isolation.
 
 Not implemented yet: write operations, destructive tools, TLS termination (put a
-reverse proxy in front of a non-loopback bind), a health endpoint, and
-configuration of HTTP-level concurrency and session expiry beyond the MCP SDK's
-own defaults.
+reverse proxy in front of a non-loopback bind), a health endpoint, and an
+HTTP-level concurrency cap (Discord calls are already capped by
+`policy.max_concurrent_requests`).
 
 ## Build and test
 
@@ -122,6 +122,12 @@ cannot reach the endpoint. A request carrying `Origin` must match
 `allowed_origins`; with the default empty list every `Origin`-bearing request is
 refused, which is what stops a browser page from driving the server. `both` runs
 STDIO and HTTP from the same process over the same `AppState`.
+
+`http.request_timeout_seconds` bounds how long one request may take, headers and
+response body together; a request that outlives it is answered `504` or has its
+response body cut off, and the long-lived `GET` event stream is exempt because
+that is a session stream rather than a request. `http.session_expiry_seconds` is
+the idle timeout after which a session is closed and its resources released.
 
 Operator documentation for bot creation, permissions, tools and troubleshooting
 is completed in the release phase; `docs/DEPENDENCIES.md` records the verified
