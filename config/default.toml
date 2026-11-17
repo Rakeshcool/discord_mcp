@@ -1,0 +1,46 @@
+# Discord MCP server configuration.
+#
+# This file is compiled into the binary as the built-in default and is also a
+# working example. Copy it, point DISCORD_MCP_CONFIG (or `--config`) at the copy
+# and edit that. It contains no secrets: the bot token is read from the
+# environment variable named by `discord.token_env`.
+
+[server]
+name = "discord-mcp"
+version = "0.1.0"
+transport = "stdio"                       # stdio | http | both
+
+[http]
+host = "127.0.0.1"                        # loopback by default
+port = 8787
+require_auth = true
+allow_non_loopback = false                # must be opted into explicitly
+auth_token_env = "DISCORD_MCP_HTTP_TOKEN"
+request_timeout_seconds = 30
+max_request_bytes = 1048576
+session_expiry_seconds = 3600
+allowed_origins = []                      # e.g. ["http://localhost:*"]
+
+[discord]
+api_base = "https://discord.com/api"
+api_version = "v10"
+token_env = "DISCORD_BOT_TOKEN"
+request_timeout_seconds = 20
+max_retries = 3
+allow_insecure_transport = false          # only for a loopback mock server
+
+[policy]
+read_enabled = true
+write_enabled = false                     # writes are opt-in
+require_confirmation_for_destructive = true
+guild_allowlist = []                      # empty = every guild the bot can see
+channel_allowlist = []                    # required non-empty when write_enabled
+max_messages_per_read = 100
+max_message_characters = 2000
+allow_mass_mentions = false               # must stay false in v1
+max_concurrent_requests = 8
+
+[logging]
+level = "info"                            # trace | debug | info | warn | error
+redact_message_content = true
+log_tool_arguments = false

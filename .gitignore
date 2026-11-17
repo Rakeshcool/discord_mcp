@@ -1,0 +1,13 @@
+# Build output
+/target/
+
+# Local secrets and machine-specific configuration — never commit these
+.env
+.env.*
+!.env.example
+config/local.toml
+
+# Editor and OS noise
+*.pdb
+*.log
+.DS_Store
