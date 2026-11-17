@@ -472,6 +472,33 @@ async fn an_unsupported_api_version_is_refused_at_construction() {
 }
 
 #[tokio::test]
+async fn the_canonical_base_is_accepted_without_a_proxy() {
+    let config = DiscordConfig {
+        api_base: "https://discord.com/api".to_string(),
+        ..DiscordConfig::default()
+    };
+    let token = BotToken::from_source("DISCORD_MCP_TEST_TOKEN", Some(TOKEN.to_string()))
+        .expect("the test token must satisfy the shape check");
+
+    TwilightDiscord::new(&config, &token).expect("the canonical Discord base must be accepted");
+}
+
+#[tokio::test]
+async fn a_base_without_the_api_prefix_is_refused() {
+    let config = DiscordConfig {
+        api_base: "https://discord.com/api/v10".to_string(),
+        ..DiscordConfig::default()
+    };
+    let token = BotToken::from_source("DISCORD_MCP_TEST_TOKEN", Some(TOKEN.to_string()))
+        .expect("the test token must satisfy the shape check");
+
+    let error = TwilightDiscord::new(&config, &token)
+        .expect_err("the version suffix belongs to the client, not the base URL");
+
+    assert_eq!(error.category(), ErrorCategory::Configuration);
+}
+
+#[tokio::test]
 async fn a_plaintext_non_loopback_base_is_refused_at_construction() {
     let config = DiscordConfig {
         api_base: "http://discord.example/api".to_string(),

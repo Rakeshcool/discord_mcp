@@ -17,8 +17,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use twilight_http::Client;
+use twilight_http::response::ResponseFuture;
 use twilight_http::response::marker::ListBody;
-use twilight_http::response::{DeserializeBodyError, ResponseFuture};
 use twilight_model::channel::message::Message;
 use twilight_model::channel::{Channel, ChannelType};
 use twilight_model::guild::{Guild, Member};
@@ -28,7 +28,7 @@ use twilight_model::user::CurrentUserGuild;
 
 use crate::config::schema::{DiscordConfig, is_loopback_host};
 use crate::discord::client::{DiscordApi, GUILDS_PAGE_MAX, MEMBERS_PAGE_MAX, MESSAGES_PAGE_MAX};
-use crate::discord::errors::map_discord_error;
+use crate::discord::errors::{map_discord_error, read_body_error};
 use crate::discord::ids::{ChannelId, GuildId, MessageId, UserId};
 use crate::discord::models::{
     ChannelKind, ChannelSummary, GuildDetail, GuildSummary, MemberSummary, MessageAuthor,
@@ -38,62 +38,44 @@ use crate::discord::rate_limit::{backoff, is_transient};
 use crate::error::{AppError, ErrorCategory};
 use crate::security::secrets::BotToken;
 
-/// Where requests are sent.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Endpoint {
-    /// Host (and port) to send requests to, when it is not `discord.com`.
-    proxy: Option<String>,
-    /// Whether to speak plaintext HTTP.
-    insecure: bool,
-}
-
-impl Endpoint {
-    /// Decide how to reach Discord from the configured base URL.
-    ///
-    /// twilight builds `<scheme>://<host>/api/v10/<route>`, where the scheme and
-    /// host come from its proxy hook. A base URL is therefore expressible as a
-    /// (host, scheme) pair plus the fixed `/api` prefix, and that is exactly what
-    /// a local mock server needs.
-    fn parse(base: &str) -> Result<Self, AppError> {
-        let base = base.trim();
-        let (scheme, rest) = base
-            .split_once("://")
-            .ok_or_else(|| AppError::configuration("discord.api_base must be an absolute URL"))?;
-        let insecure = match scheme {
-            "https" => false,
-            "http" => true,
-            other => {
-                return Err(AppError::configuration(format!(
-                    "discord.api_base must use http or https, not `{other}`"
-                )));
-            }
-        };
-        let (authority, path) = match rest.split_once('/') {
-            Some((authority, path)) => (authority, format!("/{path}")),
-            None => (rest, String::new()),
-        };
-        if authority.is_empty() {
-            return Err(AppError::configuration(
-                "discord.api_base must include a host",
-            ));
-        }
-        if path != "/api" {
+/// Express the configured base URL as twilight proxy settings.
+///
+/// twilight builds `<scheme>://<host>/api/v10/<route>`, where the scheme and
+/// host come from its proxy hook. A base URL is therefore a (host, scheme) pair
+/// plus the fixed `/api` prefix, and that is exactly what a local mock server
+/// needs. `None` means the canonical endpoint, which needs no proxy.
+fn proxy_for(base: &str) -> Result<Option<(String, bool)>, AppError> {
+    let base = base.trim();
+    let (scheme, rest) = base
+        .split_once("://")
+        .ok_or_else(|| AppError::configuration("discord.api_base must be an absolute URL"))?;
+    let insecure = match scheme {
+        "https" => false,
+        "http" => true,
+        other => {
             return Err(AppError::configuration(format!(
-                "discord.api_base must end with `/api`, because requests are built as `<base>/v10/<route>` (got `{base}`)"
+                "discord.api_base must use http or https, not `{other}`"
             )));
         }
-        if insecure {
-            let host = authority.split(':').next().unwrap_or_default();
-            if !is_loopback_host(host) {
-                return Err(AppError::configuration(format!(
-                    "discord.api_base may use plaintext http only for a loopback host (got `{authority}`)"
-                )));
-            }
-        }
-
-        let proxy = (insecure || authority != "discord.com").then(|| authority.to_string());
-        Ok(Self { proxy, insecure })
+    };
+    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+    if authority.is_empty() {
+        return Err(AppError::configuration(
+            "discord.api_base must include a host",
+        ));
     }
+    if path != "api" {
+        return Err(AppError::configuration(format!(
+            "discord.api_base must end with `/api`, because requests are built as `<base>/v10/<route>` (got `{base}`)"
+        )));
+    }
+    if insecure && !is_loopback_host(authority.split(':').next().unwrap_or_default()) {
+        return Err(AppError::configuration(format!(
+            "discord.api_base may use plaintext http only for a loopback host (got `{authority}`)"
+        )));
+    }
+
+    Ok((insecure || authority != "discord.com").then(|| (authority.to_string(), insecure)))
 }
 
 /// A Discord client backed by twilight-http.
@@ -112,15 +94,15 @@ impl TwilightDiscord {
                 "discord.api_version must be `{expected_version}` to match the bundled Discord client"
             )));
         }
-        let endpoint = Endpoint::parse(&config.api_base)?;
+        let proxy = proxy_for(&config.api_base)?;
         install_crypto_provider();
         let timeout = Duration::from_secs(config.request_timeout_seconds);
 
         let mut builder = Client::builder()
             .token(token.expose().to_string())
             .timeout(timeout);
-        if let Some(authority) = endpoint.proxy {
-            builder = builder.proxy(authority, endpoint.insecure);
+        if let Some((authority, insecure)) = proxy {
+            builder = builder.proxy(authority, insecure);
         }
 
         Ok(Self {
@@ -130,50 +112,13 @@ impl TwilightDiscord {
         })
     }
 
-    /// One request/response JSON model, retried on transient failures.
-    async fn send_one<T>(
-        &self,
-        operation: &'static str,
-        mut make: impl FnMut() -> ResponseFuture<T>,
-    ) -> Result<T, AppError>
-    where
-        T: DeserializeOwned + Unpin,
-    {
-        self.execute(operation, || {
-            let future = make();
-            async move {
-                let response = future.await.map_err(AttemptError::Request)?;
-                response.model().await.map_err(AttemptError::Body)
-            }
-        })
-        .await
-    }
-
-    /// One request whose body is a JSON array, retried on transient failures.
-    async fn send_many<T>(
-        &self,
-        operation: &'static str,
-        mut make: impl FnMut() -> ResponseFuture<ListBody<T>>,
-    ) -> Result<Vec<T>, AppError>
-    where
-        T: DeserializeOwned + Unpin,
-    {
-        self.execute(operation, || {
-            let future = make();
-            async move {
-                let response = future.await.map_err(AttemptError::Request)?;
-                response.model().await.map_err(AttemptError::Body)
-            }
-        })
-        .await
-    }
-
-    /// Run attempts under one timeout each, retrying transient failures.
+    /// The one request path: attempts under one timeout each, retrying
+    /// transient failures within the configured budget.
     ///
     /// The timeout covers a whole attempt — rate-limit waits included — so a
     /// caller never waits longer than configured, whatever retry loop twilight
     /// runs internally.
-    async fn execute<T, F>(
+    async fn send<T, F>(
         &self,
         operation: &'static str,
         mut make: impl FnMut() -> F,
@@ -194,20 +139,10 @@ impl TwilightDiscord {
                     ));
                 }
                 Ok(Ok(value)) => return Ok(value),
-                Ok(Err(AttemptError::Body(error))) => {
-                    // The error kind names the failure without echoing the body.
-                    tracing::debug!(
-                        operation,
-                        kind = ?error.kind(),
-                        "Discord response body could not be read"
-                    );
-                    return Err(AppError::new(
-                        ErrorCategory::Network,
-                        format!(
-                            "{operation} failed: Discord returned a response that could not be parsed"
-                        ),
-                    ));
-                }
+                // A body that could not be read is not retried: twilight cannot
+                // tell a truncated body from a genuinely bad one, and a read
+                // that already failed this way rarely succeeds unchanged.
+                Ok(Err(AttemptError::Body)) => return Err(read_body_error(operation)),
                 Ok(Err(AttemptError::Request(error))) => error,
             };
 
@@ -243,12 +178,34 @@ fn install_crypto_provider() {
     });
 }
 
-/// Why a single attempt failed, keeping the two twilight error types apart.
+/// Why a single attempt failed: the request, or the body it returned.
 enum AttemptError {
     /// The request itself failed.
     Request(twilight_http::Error),
-    /// The response arrived but its body could not be read or parsed.
-    Body(DeserializeBodyError),
+    /// The response arrived but its body could not be read as the expected model.
+    Body,
+}
+
+/// Await a request and read its single JSON model.
+async fn read_one<T>(future: ResponseFuture<T>) -> Result<T, AttemptError>
+where
+    T: DeserializeOwned + Unpin,
+{
+    let response = future.await.map_err(AttemptError::Request)?;
+    response.model().await.map_err(|_| AttemptError::Body)
+}
+
+/// Await a request and read its JSON array.
+///
+/// Separate from [`read_one`] only because twilight types a list response as
+/// `Response<ListBody<T>>`: the model type differs, so one function cannot serve
+/// both shapes.
+async fn read_many<T>(future: ResponseFuture<ListBody<T>>) -> Result<Vec<T>, AttemptError>
+where
+    T: DeserializeOwned + Unpin,
+{
+    let response = future.await.map_err(AttemptError::Request)?;
+    response.model().await.map_err(|_| AttemptError::Body)
 }
 
 impl std::fmt::Debug for TwilightDiscord {
@@ -270,12 +227,12 @@ impl DiscordApi for TwilightDiscord {
     ) -> Result<Page<GuildSummary>, AppError> {
         let limit = clamp_limit("discord_list_guilds", limit, GUILDS_PAGE_MAX)?;
         let guilds: Vec<CurrentUserGuild> = self
-            .send_many("discord_list_guilds", || {
+            .send("discord_list_guilds", || {
                 let mut request = self.client.current_user_guilds().limit(limit);
                 if let Some(after) = after {
                     request = request.after(Id::new(after.get()));
                 }
-                IntoFuture::into_future(request)
+                read_many(IntoFuture::into_future(request))
             })
             .await?;
 
@@ -296,8 +253,10 @@ impl DiscordApi for TwilightDiscord {
 
     async fn get_guild(&self, guild_id: &GuildId) -> Result<GuildDetail, AppError> {
         let guild: Guild = self
-            .send_one("discord_get_guild", || {
-                IntoFuture::into_future(self.client.guild(Id::new(guild_id.get())))
+            .send("discord_get_guild", || {
+                read_one(IntoFuture::into_future(
+                    self.client.guild(Id::new(guild_id.get())),
+                ))
             })
             .await?;
 
@@ -313,8 +272,10 @@ impl DiscordApi for TwilightDiscord {
 
     async fn list_channels(&self, guild_id: &GuildId) -> Result<Vec<ChannelSummary>, AppError> {
         let channels: Vec<Channel> = self
-            .send_many("discord_list_channels", || {
-                IntoFuture::into_future(self.client.guild_channels(Id::new(guild_id.get())))
+            .send("discord_list_channels", || {
+                read_many(IntoFuture::into_future(
+                    self.client.guild_channels(Id::new(guild_id.get())),
+                ))
             })
             .await?;
 
@@ -323,8 +284,10 @@ impl DiscordApi for TwilightDiscord {
 
     async fn get_channel(&self, channel_id: &ChannelId) -> Result<ChannelSummary, AppError> {
         let channel: Channel = self
-            .send_one("discord_get_channel", || {
-                IntoFuture::into_future(self.client.channel(Id::new(channel_id.get())))
+            .send("discord_get_channel", || {
+                read_one(IntoFuture::into_future(
+                    self.client.channel(Id::new(channel_id.get())),
+                ))
             })
             .await?;
 
@@ -343,9 +306,9 @@ impl DiscordApi for TwilightDiscord {
             ));
         }
         let messages: Vec<Message> = self
-            .send_many("discord_get_messages", || {
+            .send("discord_get_messages", || {
                 let request = self.client.channel_messages(Id::new(channel_id.get()));
-                match (query.before, query.after) {
+                read_many(match (query.before, query.after) {
                     (Some(before), _) => {
                         IntoFuture::into_future(request.before(Id::new(before.get())).limit(limit))
                     }
@@ -353,7 +316,7 @@ impl DiscordApi for TwilightDiscord {
                         IntoFuture::into_future(request.after(Id::new(after.get())).limit(limit))
                     }
                     (None, None) => IntoFuture::into_future(request.limit(limit)),
-                }
+                })
             })
             .await?;
 
@@ -370,11 +333,11 @@ impl DiscordApi for TwilightDiscord {
         message_id: &MessageId,
     ) -> Result<MessageSummary, AppError> {
         let message: Message = self
-            .send_one("discord_get_message", || {
-                IntoFuture::into_future(
+            .send("discord_get_message", || {
+                read_one(IntoFuture::into_future(
                     self.client
                         .message(Id::new(channel_id.get()), Id::new(message_id.get())),
-                )
+                ))
             })
             .await?;
 
@@ -389,7 +352,7 @@ impl DiscordApi for TwilightDiscord {
     ) -> Result<Page<MemberSummary>, AppError> {
         let limit = clamp_limit("discord_list_members", limit, MEMBERS_PAGE_MAX)?;
         let members: Vec<Member> = self
-            .send_many("discord_list_members", || {
+            .send("discord_list_members", || {
                 let mut request = self
                     .client
                     .guild_members(Id::new(guild_id.get()))
@@ -397,7 +360,7 @@ impl DiscordApi for TwilightDiscord {
                 if let Some(after) = after {
                     request = request.after(Id::new(after.get()));
                 }
-                IntoFuture::into_future(request)
+                read_many(IntoFuture::into_future(request))
             })
             .await?;
 
@@ -414,11 +377,11 @@ impl DiscordApi for TwilightDiscord {
         user_id: &UserId,
     ) -> Result<MemberSummary, AppError> {
         let member: Member = self
-            .send_one("discord_get_member", || {
-                IntoFuture::into_future(
+            .send("discord_get_member", || {
+                read_one(IntoFuture::into_future(
                     self.client
                         .guild_member(Id::new(guild_id.get()), Id::new(user_id.get())),
-                )
+                ))
             })
             .await?;
 
@@ -461,19 +424,9 @@ fn user_id(id: Id<UserMarker>) -> UserId {
 }
 
 fn channel_kind(kind: ChannelType) -> ChannelKind {
-    match kind {
-        ChannelType::GuildText => ChannelKind::Text,
-        ChannelType::GuildVoice => ChannelKind::Voice,
-        ChannelType::GuildCategory => ChannelKind::Category,
-        ChannelType::GuildAnnouncement => ChannelKind::Announcement,
-        ChannelType::GuildForum => ChannelKind::Forum,
-        ChannelType::GuildStageVoice => ChannelKind::Stage,
-        ChannelType::AnnouncementThread
-        | ChannelType::PublicThread
-        | ChannelType::PrivateThread => ChannelKind::Thread,
-        ChannelType::GuildDirectory => ChannelKind::Directory,
-        other => ChannelKind::from_code(u8::from(other)),
-    }
+    // twilight's numeric channel type is Discord's, so `from_code` covers every
+    // variant, named or unknown.
+    ChannelKind::from_code(u8::from(kind))
 }
 
 fn channel_summary(channel: Channel) -> ChannelSummary {
