@@ -83,6 +83,74 @@ fn run(args: &[&str], stdin_data: Option<&str>, token: Option<&str>) -> Outcome 
     }
 }
 
+const INITIALIZE: &str = concat!(
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{",
+    "\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},",
+    "\"clientInfo\":{\"name\":\"phase4-test\",\"version\":\"0.1.0\"}}}\n",
+    "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n",
+);
+
+fn tool_call(id: u32, name: &str, arguments: &str) -> String {
+    format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tools/call\",\"params\":{{\"name\":\"{name}\",\"arguments\":{arguments}}}}}\n"
+    )
+}
+
+fn session(frames: &str) -> String {
+    format!("{INITIALIZE}{frames}")
+}
+
+/// Run one stdio session against `config` and return every parsed response.
+///
+/// The frames are written at once and stdin is closed, which is how an MCP
+/// client ends a session; the server must exit cleanly with protocol-only stdout.
+fn run_session(name: &str, config: &str, frames: &str) -> Vec<Value> {
+    let path = temp_config(name, config);
+    let outcome = run(
+        &["serve", "--config", &path.display().to_string()],
+        Some(frames),
+        Some(TOKEN),
+    );
+    std::fs::remove_file(&path).ok();
+
+    assert!(
+        !outcome.timed_out,
+        "the server did not exit after stdin closed"
+    );
+    assert_eq!(outcome.exit_code, Some(0), "stderr: {}", outcome.stderr);
+    assert!(
+        !outcome.stderr.contains(TOKEN),
+        "stderr leaked the bot token"
+    );
+
+    outcome
+        .stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            serde_json::from_str(line)
+                .unwrap_or_else(|error| panic!("stdout line is not JSON ({error}): {line:?}"))
+        })
+        .collect()
+}
+
+fn response_with_id(responses: &[Value], id: u64) -> &Value {
+    responses
+        .iter()
+        .find(|value| value["id"] == id)
+        .unwrap_or_else(|| panic!("no response with id {id}: {responses:?}"))
+}
+
+fn tool_error_text(response: &Value) -> &str {
+    assert_eq!(
+        response["result"]["isError"], true,
+        "expected a tool error result, got {response}"
+    );
+    response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no text content in {response}"))
+}
+
 fn temp_config(name: &str, text: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
         "discord-mcp-protocol-{}-{name}.toml",
@@ -209,4 +277,128 @@ fn stdio_transport_writes_only_json_rpc_frames_to_stdout() {
         initialize["result"]["protocolVersion"].is_string(),
         "missing negotiated protocol version: {initialize}"
     );
+}
+
+#[test]
+fn a_disabled_read_returns_a_policy_blocked_tool_error() {
+    let frames = session(&tool_call(2, "discord_list_guilds", "{}"));
+    let responses = run_session("read-disabled", "[policy]\nread_enabled = false\n", &frames);
+
+    let text = tool_error_text(response_with_id(&responses, 2));
+    assert!(text.starts_with("POLICY_BLOCKED"), "got {text:?}");
+}
+
+#[test]
+fn an_unlisted_guild_is_refused_at_the_tool_boundary() {
+    let frames = session(&tool_call(2, "discord_get_guild", r#"{"guild_id":"2"}"#));
+    let responses = run_session(
+        "guild-allowlist",
+        "[policy]\nguild_allowlist = [\"1\"]\n",
+        &frames,
+    );
+
+    let text = tool_error_text(response_with_id(&responses, 2));
+    assert!(text.starts_with("POLICY_BLOCKED"), "got {text:?}");
+    assert!(text.contains("guild 2"), "got {text:?}");
+    assert!(text.contains("guild_allowlist"), "got {text:?}");
+}
+
+#[test]
+fn an_oversized_message_page_is_an_invalid_argument_tool_error() {
+    let frames = session(&tool_call(
+        2,
+        "discord_get_messages",
+        r#"{"channel_id":"4","limit":5000}"#,
+    ));
+    let responses = run_session("page-limit", "", &frames);
+
+    let text = tool_error_text(response_with_id(&responses, 2));
+    assert!(text.starts_with("INVALID_ARGUMENT"), "got {text:?}");
+}
+
+#[test]
+fn an_unknown_argument_is_a_tool_error_from_the_strict_schema() {
+    let frames = session(&tool_call(2, "discord_list_guilds", r#"{"surprise":true}"#));
+    let responses = run_session("unknown-argument", "", &frames);
+
+    let text = tool_error_text(response_with_id(&responses, 2));
+    assert!(
+        text.contains("failed to deserialize parameters"),
+        "got {text:?}"
+    );
+}
+
+#[test]
+fn tools_are_advertised_as_read_only_with_strict_schemas() {
+    let frames =
+        session("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}\n");
+    let responses = run_session("tools-list", "", &frames);
+
+    let tools = response_with_id(&responses, 2)["result"]["tools"]
+        .as_array()
+        .expect("a tools array");
+    let mut names: Vec<&str> = tools
+        .iter()
+        .map(|tool| tool["name"].as_str().expect("a tool name"))
+        .collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        vec![
+            "discord_get_channel",
+            "discord_get_guild",
+            "discord_get_member",
+            "discord_get_message",
+            "discord_get_messages",
+            "discord_list_channels",
+            "discord_list_guilds",
+            "discord_list_members",
+        ]
+    );
+
+    for tool in tools {
+        assert_eq!(
+            tool["inputSchema"]["additionalProperties"], false,
+            "schema must reject unknown arguments: {tool}"
+        );
+        assert_eq!(
+            tool["annotations"]["readOnlyHint"], true,
+            "every tool in this build is a read: {tool}"
+        );
+    }
+}
+
+#[test]
+fn the_guilds_resource_is_advertised() {
+    let frames =
+        session("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"resources/list\",\"params\":{}}\n");
+    let responses = run_session("resources-list", "", &frames);
+
+    let resources = response_with_id(&responses, 2)["result"]["resources"]
+        .as_array()
+        .expect("a resources array");
+    assert_eq!(resources.len(), 1, "{resources:?}");
+    assert_eq!(resources[0]["uri"], "discord://guilds");
+}
+
+#[test]
+fn a_disabled_read_blocks_the_guilds_resource() {
+    let frames = session(
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"resources/read\",\"params\":{\"uri\":\"discord://guilds\"}}\n",
+    );
+    let responses = run_session(
+        "resource-denied",
+        "[policy]\nread_enabled = false\n",
+        &frames,
+    );
+
+    let response = response_with_id(&responses, 2);
+    assert!(
+        response["error"].is_object(),
+        "resources report failures as protocol errors: {response}"
+    );
+    let message = response["error"]["message"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no error message in {response}"));
+    assert!(message.contains("POLICY_BLOCKED"), "got {message:?}");
 }

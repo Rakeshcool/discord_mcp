@@ -7,3 +7,4 @@ mod policy_gate;
 mod policy_rules;
 mod redaction;
 mod secrets;
+mod serialization;

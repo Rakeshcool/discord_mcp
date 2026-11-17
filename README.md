@@ -10,15 +10,19 @@ for the phased plan, and `docs/SECURITY.md` for the threat model.
 
 ## Status
 
-Phase 1 of 10 — foundation only.
+Through Phase 4 — read-only Discord access over stdio.
 
 Implemented: typed configuration with fail-closed validation, stable error
 categories, secret wrapper, structural secret redaction, stderr-only logging,
-stdio MCP handshake, CLI (`serve`, `--validate-config`), CI.
+stdio MCP handshake, CLI (`serve`, `--validate-config`), CI; a twilight-backed
+read adapter with timeouts, bounded retries and error mapping; a policy engine
+(flags, guild/channel allowlists, page limits, concurrency cap, mention
+neutralisation, fail-closed approval, content-free audit records) enforced in
+front of the client; and eight read tools plus the `discord://guilds` resource.
 
-Not implemented yet: Discord API calls, MCP tools and resources, the Streamable
-HTTP transport, and write operations. `server.transport` values `http` and
-`both` are rejected at startup until that phase lands.
+Not implemented yet: the Streamable HTTP transport, write operations and
+destructive tools. `server.transport` values `http` and `both` are rejected at
+startup until that phase lands.
 
 ## Build and test
 

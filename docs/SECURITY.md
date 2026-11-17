@@ -101,6 +101,15 @@ session, and no database — the process holds nothing beyond the current call.
   `AuditEvent` (action, target IDs, outcome, category) through an injectable
   `AuditSink`; the shipping sink logs to stderr, denials at `info`. There is no
   field in which a message body or token could be recorded.
+- **The MCP surface is read-only and strict.** Eight read tools and one resource
+  (`discord://guilds`) are registered; no write or destructive tool exists in
+  this build. Argument schemas use `deny_unknown_fields`, so an unknown argument
+  is refused rather than ignored, and every tool is annotated `readOnlyHint`.
+- **Failures are legible, not opaque.** Policy denials and Discord errors are
+  returned as `isError` tool results whose text begins with the stable error code
+  (`POLICY_BLOCKED`, `INVALID_ARGUMENT`, …), because a protocol error would be
+  rendered as an internal failure the model cannot act on. Resources have no such
+  flag, so a refused resource read is a request error carrying the same code.
 
 ## 5. Data handling
 
@@ -127,8 +136,7 @@ session, and no database — the process holds nothing beyond the current call.
 
 | Control | Phase |
 |---|---|
-| Discord adapter, rate-limit handling, error mapping | Phase 2 |
-| Read tools, resources, prompts over MCP | Phase 4 |
+| Draft/review prompts | not scheduled (optional in the specification) |
 | Streamable HTTP transport, bearer-token gate for non-loopback | Phase 5 |
 | `discord_send_message` with pre-flight policy and audit record | Phase 6 |
 | Correlation IDs on every tool execution | Phase 6 |

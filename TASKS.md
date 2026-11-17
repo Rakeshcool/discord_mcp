@@ -75,21 +75,28 @@ approval path is proven against fake approval sources rather than a real one.
 
 ## Phase 4 — MCP tools and resources
 
-- [ ] Implement MCP initialization and capability negotiation.
-- [ ] Implement central tool registry.
-- [ ] Implement strict JSON schemas.
-- [ ] Implement `discord_list_guilds`.
-- [ ] Implement `discord_get_guild`.
-- [ ] Implement `discord_list_channels`.
-- [ ] Implement `discord_get_channel`.
-- [ ] Implement `discord_get_messages`.
-- [ ] Implement `discord_get_message`.
-- [ ] Implement member tools if supported by selected permissions/intents.
-- [ ] Implement read-only resource URIs.
-- [ ] Add optional draft/review prompts.
-- [ ] Add schema and tool contract tests.
+- [x] Implement MCP initialization and capability negotiation.
+- [x] Implement central tool registry.
+- [x] Implement strict JSON schemas.
+- [x] Implement `discord_list_guilds`.
+- [x] Implement `discord_get_guild`.
+- [x] Implement `discord_list_channels`.
+- [x] Implement `discord_get_channel`.
+- [x] Implement `discord_get_messages`.
+- [x] Implement `discord_get_message`.
+- [x] Implement member tools if supported by selected permissions/intents.
+- [x] Implement read-only resource URIs.
+- [ ] Add optional draft/review prompts. *(deliberately not implemented: prompts are optional in the
+      specification and this build has no draft/review content to offer)*
+- [x] Add schema and tool contract tests.
 
 **Exit criteria:** Read-only tools and resources are discoverable and execute correctly.
+
+Met: eight read tools and the `discord://guilds` resource are registered over the
+policy gate, with `deny_unknown_fields` argument schemas and `readOnlyHint`
+annotations. Denials are proven over stdio (`isError` results carrying
+`POLICY_BLOCKED`); successful Discord reads are covered by the adapter and gate
+tests, not end to end, because no live bot is used.
 
 ## Phase 5 — STDIO transport
 

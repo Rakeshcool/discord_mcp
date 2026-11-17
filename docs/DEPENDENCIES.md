@@ -123,11 +123,25 @@ match the version rmcp exposes, and it will be recorded here when Phase 5 lands.
 | `twilight-model` | 0.18.0 | Discord API models, confined to the adapter layer |
 | `async-trait` | 0.1.92 | `dyn`-compatible `DiscordApi` trait |
 | `rustls` | 0.23.46 | TLS, `ring` provider selected at startup; no default features |
-| `serde_json` (dev) | 1.0.154 | Parsing protocol frames in the protocol tests |
+| `serde_json` | 1.0.154 | Tool result serialization and protocol-frame parsing in tests |
+| `schemars` | 1.2.3 | JSON Schema derivation for tool argument types (same version rmcp re-exports) |
 
 `secrecy` 0.10 exposes `pub type SecretString = SecretBox<str>` and the
 `ExposeSecret` trait, which this crate uses so a token cannot be `Debug`-printed
 by accident.
+
+## MCP tool schemas (Phase 4)
+
+Tool arguments are derived with `schemars 1.2.3`, the version `rmcp` itself
+re-exports, so the schema the SDK validates against and the schema the macros
+derive are the same implementation. Every argument struct carries
+`#[serde(deny_unknown_fields)]`, which schemars renders as
+`additionalProperties: false`: an unknown argument is refused instead of ignored.
+
+Discord snowflakes are strings on the wire. The ID newtypes implement `Serialize`
+by hand to emit decimal strings, because a 19-digit snowflake does not survive an
+`f64` round trip. Schema-level `pattern` refinement is not used: validation is
+performed by the ID parsers, which return `INVALID_ARGUMENT` before any request.
 
 ## v1 bot scopes and minimum permissions (Phase 0 decision)
 
