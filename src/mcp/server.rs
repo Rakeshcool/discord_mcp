@@ -29,11 +29,6 @@ impl DiscordMcpServer {
     pub fn new(state: Arc<AppState>) -> Self {
         Self { state }
     }
-
-    /// Shared state, for tool implementations in later phases.
-    pub fn state(&self) -> &Arc<AppState> {
-        &self.state
-    }
 }
 
 impl ServerHandler for DiscordMcpServer {

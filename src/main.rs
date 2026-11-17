@@ -109,7 +109,7 @@ fn run() -> Result<ExitCode, AppError> {
             Ok(ExitCode::SUCCESS)
         }
         Command::ValidateConfig => {
-            let path = config_path.or_else(|| load::path_from_env().map(PathBuf::from));
+            let path = resolve_config_path(config_path);
             let (config, source) = load::load_with_source(path.as_deref())?;
             let report = AppService::validate_only(&config);
             eprintln!("configuration valid (source: {})", source.as_str());
@@ -128,7 +128,7 @@ fn run() -> Result<ExitCode, AppError> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Serve => {
-            let path = config_path.or_else(|| load::path_from_env().map(PathBuf::from));
+            let path = resolve_config_path(config_path);
             let config = load::load(path.as_deref())?;
             let service = AppService::bootstrap(config)?;
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -143,6 +143,10 @@ fn run() -> Result<ExitCode, AppError> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+fn resolve_config_path(explicit: Option<PathBuf>) -> Option<PathBuf> {
+    explicit.or_else(|| load::path_from_env().map(PathBuf::from))
 }
 
 fn set_config_path(slot: &mut Option<PathBuf>, value: &str) -> Result<(), AppError> {

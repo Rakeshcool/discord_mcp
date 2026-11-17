@@ -59,10 +59,10 @@ session, and no database — the process holds nothing beyond the current call.
   `discord.token_env`; shape-validated; never logged, never returned by a tool,
   never written to a file. Placeholder values, whitespace and `Bot `-prefixed
   values are rejected.
-- **Redaction, structurally.** `Redactor` removes `Bot <token>` and
+- **Redaction, structurally.** `redact()` removes `Bot <token>` and
   `Bearer <token>` shaped values and the values of `authorization`, `x-api-key`
-  and `token` keys, whatever the secret is, so redaction does not depend on the
-  secret being registered anywhere.
+  and `token` keys, whatever the secret is. Nothing is registered with the
+  redactor, so it never holds a second copy of a secret.
 - **Fail-closed configuration.** Unknown fields, out-of-range limits, non-loopback
   binding without an explicit opt-in, non-loopback binding without
   authentication, missing `allowed_origins` for non-loopback binding, plaintext

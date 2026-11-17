@@ -1,8 +1,8 @@
 //! Application service: the only place that starts the process.
 //!
 //! Startup order matters. The bot token is resolved first, so a missing secret
-//! fails before any logging or transport work; logging is installed with a
-//! redactor before anything else can emit a record; only then is a transport
+//! fails before any logging or transport work; logging is installed with
+//! redaction before anything else can emit a record; only then is a transport
 //! chosen.
 
 use std::sync::Arc;
@@ -11,7 +11,6 @@ use crate::app::state::AppState;
 use crate::config::{Config, TransportMode};
 use crate::error::AppError;
 use crate::observability::logging;
-use crate::security::redaction::Redactor;
 use crate::security::secrets::BotToken;
 
 /// Outcome of a configuration-only check, safe to print: no secret values.
@@ -33,8 +32,8 @@ impl AppService {
     /// Full startup: resolve the token, install logging, build shared state.
     pub fn bootstrap(config: Config) -> Result<Self, AppError> {
         let token = BotToken::from_env(&config.discord.token_env)?;
-        let state = Arc::new(AppState::new(config, Some(token)));
-        logging::init(&state.config().logging, &Redactor::new())?;
+        let state = Arc::new(AppState::new(config, token));
+        logging::init(&state.config().logging)?;
         tracing::info!(
             server = %state.config().server.name,
             version = %state.config().server.version,
@@ -85,11 +84,6 @@ impl AppService {
             token_present,
             warnings,
         }
-    }
-
-    /// Shared state, for transports that need to hand it on.
-    pub fn state(&self) -> &Arc<AppState> {
-        &self.state
     }
 
     /// Run the configured transport until it stops.
