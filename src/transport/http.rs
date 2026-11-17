@@ -20,12 +20,11 @@
 //! anti-rebinding checks, and the bearer token is the authentication.
 
 use std::collections::BTreeSet;
-use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use axum::body::{Body, Bytes};
+use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::middleware::{self, Next};
@@ -83,9 +82,7 @@ pub async fn serve(state: Arc<AppState>) -> Result<(), AppError> {
         ))
         // Outermost, so the deadline covers authentication and MCP handling too.
         .layer(middleware::from_fn_with_state(
-            Limits {
-                request: Duration::from_secs(config.request_timeout_seconds),
-            },
+            Duration::from_secs(config.request_timeout_seconds),
             limit_request_time,
         ));
 
@@ -215,23 +212,18 @@ fn unauthorized() -> Response {
         .into_response()
 }
 
-/// Per-request limits the HTTP layer enforces itself.
-#[derive(Clone, Copy)]
-struct Limits {
-    request: Duration,
-}
-
 /// Bound how long one request may take, headers and response body together.
 ///
-/// A timeout on the handler alone would be a placebo here: the MCP service
-/// returns an SSE response as soon as it starts streaming, so a stalled tool
-/// call would keep an "already answered" request alive indefinitely. The
-/// deadline therefore covers the response body too and ends it with an error.
+/// Bounding the handler alone would be a placebo: the MCP service answers a POST
+/// with an SSE response as soon as it starts streaming, so a stalled tool call
+/// would keep an "already answered" request alive indefinitely. Two deadlines
+/// are therefore needed, and no more: one on the response (a hung `initialize`
+/// handshake never reaches a body) and one on that body.
 ///
 /// `GET` is exempt: that route is the session's long-lived standalone event
 /// stream, and expiring it would disconnect every subscribed client.
 async fn limit_request_time(
-    State(limits): State<Limits>,
+    State(limit): State<Duration>,
     request: Request,
     next: Next,
 ) -> Response {
@@ -239,39 +231,26 @@ async fn limit_request_time(
         return next.run(request).await;
     }
 
-    let deadline = tokio::time::Instant::now() + limits.request;
+    let deadline = tokio::time::Instant::now() + limit;
     let response = match tokio::time::timeout_at(deadline, next.run(request)).await {
         Ok(response) => response,
         Err(_) => return gateway_timeout(),
     };
 
-    let (parts, body) = response.into_parts();
     let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    let (parts, body) = response.into_parts();
     let body = Body::from_stream(body.into_data_stream().timeout(remaining).map(
-        |item| -> Result<Bytes, BoxError> {
-            match item {
-                Ok(Ok(chunk)) => Ok(chunk),
-                Ok(Err(error)) => Err(Box::new(error)),
-                Err(_) => Err(Box::new(RequestTimedOut)),
-            }
+        |item| match item {
+            Ok(Ok(chunk)) => Ok(chunk),
+            Ok(Err(error)) => Err(std::io::Error::other(error)),
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the request exceeded http.request_timeout_seconds",
+            )),
         },
     ));
     Response::from_parts(parts, body)
 }
-
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
-
-/// Marker for a response body cut off by the request deadline.
-#[derive(Debug)]
-struct RequestTimedOut;
-
-impl fmt::Display for RequestTimedOut {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("the request exceeded http.request_timeout_seconds")
-    }
-}
-
-impl std::error::Error for RequestTimedOut {}
 
 fn gateway_timeout() -> Response {
     (
@@ -285,6 +264,7 @@ fn gateway_timeout() -> Response {
 mod tests {
     use super::*;
     use crate::config::schema::HttpConfig;
+    use axum::body::Bytes;
     use axum::http::HeaderValue;
 
     fn config(host: &str, port: u16) -> HttpConfig {
@@ -368,9 +348,7 @@ mod tests {
             Router::new()
                 .route("/slow", post(slow_body))
                 .layer(middleware::from_fn_with_state(
-                    Limits {
-                        request: Duration::from_millis(50),
-                    },
+                    Duration::from_millis(50),
                     limit_request_time,
                 ));
 
@@ -413,9 +391,7 @@ mod tests {
             Router::new()
                 .route("/events", get(slow_stream))
                 .layer(middleware::from_fn_with_state(
-                    Limits {
-                        request: Duration::from_millis(20),
-                    },
+                    Duration::from_millis(20),
                     limit_request_time,
                 ));
 
