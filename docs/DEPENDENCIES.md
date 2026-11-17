@@ -189,6 +189,7 @@ Minimum permissions the operator grants per guild:
 | Read history | Read Message History | `discord_get_messages`, `discord_get_message` |
 | Send messages | Send Messages | `discord_send_message`, only when writes are enabled |
 | Member data | `GUILD_MEMBERS` **privileged intent** (Developer Portal toggle) | `discord_list_members`, `discord_get_member` |
+| Message text | `MESSAGE_CONTENT` **privileged intent** (Developer Portal toggle) | non-empty `content` in `discord_get_messages`, `discord_get_message`; without it Discord returns empty `content`, `embeds`, `attachments` and `components` in REST responses too, so every message reads as `content: null` |
 
 `Administrator` is never required. Discord permissions remain the final
 authority: local policy can only narrow what the bot may do, never widen it.
