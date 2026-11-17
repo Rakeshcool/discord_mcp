@@ -5,7 +5,7 @@
 .env
 .env.*
 !.env.example
-config/local.toml
+config/local*.toml
 
 # Editor and OS noise
 *.pdb

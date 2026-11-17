@@ -5,8 +5,11 @@ Discord bot identity**. Windows 11 x64, Rust, MCP STDIO and Streamable HTTP
 transports.
 
 It is not a self-bot, not a user-account automation tool, and not a Discord
-client reimplementation. See `SPEC.md` for the full specification, `TASKS.md`
-for the phased plan, and `docs/SECURITY.md` for the threat model.
+client reimplementation. **Start with [`docs/SETUP.md`](docs/SETUP.md)** for the
+full install-to-first-call guide (Discord app, intents, permissions, both
+transports, client configuration, verification, troubleshooting). See `SPEC.md`
+for the full specification, `TASKS.md` for the phased plan, and
+`docs/SECURITY.md` for the threat model.
 
 ## Status
 
@@ -136,6 +139,6 @@ response body cut off, and the long-lived `GET` event stream is exempt because
 that is a session stream rather than a request. `http.session_expiry_seconds` is
 the idle timeout after which a session is closed and its resources released.
 
-Operator documentation for bot creation, permissions, tools and troubleshooting
-is completed in the release phase; `docs/DEPENDENCIES.md` records the verified
-dependency and API decisions.
+Bot creation, intents, permissions, client configuration, verification steps and
+troubleshooting are in [`docs/SETUP.md`](docs/SETUP.md);
+`docs/DEPENDENCIES.md` records the verified dependency and API decisions.

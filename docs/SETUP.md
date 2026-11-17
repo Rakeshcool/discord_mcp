@@ -1,0 +1,451 @@
+# Setup guide
+
+End-to-end instructions for installing and using this MCP server: a Discord bot
+application, the build, configuration, both transports, client wiring, and the
+checks that tell you it is actually working.
+
+This build is **read-only**. It exposes eight read tools and one resource, and no
+tool that writes to Discord exists. Writes are planned for a later phase and
+disabled in configuration (`policy.write_enabled = false`).
+
+- Platform: Windows 11 x64 (`x86_64-pc-windows-msvc`). No WSL or Docker.
+- Transports: STDIO (default) and MCP Streamable HTTP (`/mcp`).
+- Identity: an official **bot** token. Never a user token.
+
+---
+
+## 1. Prerequisites
+
+| Requirement | Notes |
+|---|---|
+| Rust 1.89+ (stable, MSVC host) | `rustc --version`; install from <https://rustup.rs> |
+| A Discord account and a server you own | The demo server in these instructions is `test_mcp_server` |
+| Permission to create a Discord application | Developer Portal access with your account |
+
+Build and tool checks:
+
+```powershell
+cargo build --release
+cargo fmt --all --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+```
+
+The binary lands at `target\release\discord-mcp.exe`. `cargo run --` works the
+same way during development.
+
+---
+
+## 2. Discord side
+
+### 2.1 Create the application
+
+1. Open <https://discord.com/developers/applications> and click **New Application**.
+2. Name it (for example `discord-mcp`), accept the terms, **Create**.
+
+### 2.2 Get the bot token
+
+1. Left sidebar → **Bot** → **Reset Token** → **Copy**.
+2. Store it in `.env` (see §4). Treat it as a password: it grants everything the
+   bot can do in every server it has joined.
+
+### 2.3 Enable the privileged intents
+
+Still on the **Bot** page, scroll to **Privileged Gateway Intents**:
+
+| Intent | Why this server needs it | Effect if off |
+|---|---|---|
+| **Message Content** | Reads `content`, `embeds`, `attachments`, `components` | Every message reads as `content: null`. Discord blanks these fields in **REST responses too**, not just gateway events |
+| **Server Members** | `discord_list_members`, `discord_get_member` | Member tools return Discord's permission error |
+
+Toggle the switch, then click **Save Changes** and confirm the dialog. Without
+the confirmation the change is not applied. No restart of this server is needed;
+Discord applies the flag within seconds.
+
+Verify from a shell (PowerShell):
+
+```powershell
+curl.exe -s https://discord.com/api/v10/applications/@me `
+  -H "Authorization: Bot $env:DISCORD_BOT_TOKEN"
+```
+
+In the JSON, `flags` should include `1 << 18` (262144) or `1 << 19` (524288) —
+either means Message Content is configured. For example `flags: 557056` is
+`524288 + 32768` = Message Content *limited* + Server Members *limited*.
+
+This server is REST-only: it never opens a gateway connection, so there is
+nothing to declare in code. The portal toggle is the whole switch.
+
+### 2.4 Invite the bot with the right guild permissions
+
+1. **OAuth2 → URL Generator**.
+2. **Scopes**: tick **`bot`** only. Do not tick `applications.commands` — this
+   server registers no slash commands.
+3. **Bot Permissions**: tick **View Channels** and **Read Message History**.
+4. Copy the generated URL, open it, pick your server, **Authorize**.
+
+Or build the URL directly — `66560` is `View Channels (1024) + Read Message
+History (65536)`:
+
+```
+https://discord.com/oauth2/authorize?client_id=<APPLICATION_ID>&scope=bot&permissions=66560
+```
+
+`Administrator` is never required. Local policy can only narrow what the bot may
+do, never widen Discord's own permissions.
+
+Verify the guild permissions the bot actually holds:
+
+```powershell
+curl.exe -s https://discord.com/api/v10/users/@me/guilds `
+  -H "Authorization: Bot $env:DISCORD_BOT_TOKEN"
+```
+
+Each entry has a `permissions` bitfield; `1024` (View Channels) and `65536`
+(Read Message History) must both be set.
+
+**Intents and permissions are different things.** Permissions decide what the bot
+may do in a server; intents decide what data Discord puts in its responses. Both
+are required for message text.
+
+---
+
+## 3. Install
+
+```powershell
+git clone <repository> discord-mcp
+cd discord-mcp
+cargo build --release
+```
+
+Nothing is installed system-wide. `target\release\discord-mcp.exe` is the
+artifact; MCP clients launch it by absolute path.
+
+---
+
+## 4. Secrets
+
+The server reads **environment variables only**. It never reads `.env` itself —
+that file exists so you can load the values into your shell or your MCP client's
+`env` block.
+
+Create `.env` in the project root (already git-ignored):
+
+```dotenv
+DISCORD_BOT_TOKEN=<bot token from §2.2>
+DISCORD_MCP_HTTP_TOKEN=<only for the HTTP transport; 32+ random characters>
+```
+
+| Variable | Used by | Purpose |
+|---|---|---|
+| `DISCORD_BOT_TOKEN` | required by `serve` | Bot token. Name is configurable via `discord.token_env` |
+| `DISCORD_MCP_HTTP_TOKEN` | HTTP transport with `http.require_auth = true` | Inbound bearer token. Name is configurable via `http.auth_token_env` |
+| `DISCORD_MCP_CONFIG` | optional | Path to a TOML configuration file |
+| `RUST_LOG` | optional | Log filter, e.g. `info` or `discord_mcp=debug` |
+
+Generate an HTTP token:
+
+```powershell
+-join ((1..48) | ForEach-Object { '{0:x}' -f (Get-Random -Max 16) })
+```
+
+Load `.env` into the current PowerShell session:
+
+```powershell
+Get-Content .env | ForEach-Object {
+  if ($_ -match '^([A-Z_]+)=(.*)$') { Set-Item "env:$($Matches[1])" $Matches[2] }
+}
+```
+
+The two tokens are opposite directions of trust: the bot token is *outbound*
+(this server → Discord), the HTTP token is *inbound* (MCP client → this server).
+Never reuse one as the other, and never put the bot token in a client config.
+
+---
+
+## 5. Configuration
+
+Built-in defaults are compiled in from `config/default.toml`. To change any of
+them, copy that file and point the server at the copy with `--config <PATH>` or
+`DISCORD_MCP_CONFIG`. A file that fails to parse or validate is a startup error,
+never a silent fallback.
+
+```powershell
+Copy-Item config\default.toml config\local.toml   # config/local.toml is git-ignored
+```
+
+Settings that matter most (see `config/default.toml` for every key):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `server.transport` | `stdio` | `stdio`, `http`, or `both` |
+| `policy.read_enabled` | `true` | Turn the read tools on |
+| `policy.guild_allowlist` | `[]` | Empty means every guild the bot can see. List guild IDs to narrow it |
+| `policy.max_messages_per_read` | `100` | Page-size ceiling; a larger `limit` argument is refused |
+| `policy.max_concurrent_requests` | `8` | Caps concurrent Discord requests |
+| `discord.request_timeout_seconds` | `20` | Per Discord call |
+| `discord.max_retries` | `3` | Retries for retryable read failures |
+| `http.host` / `http.port` | `127.0.0.1` / `8787` | HTTP bind; loopback by default |
+| `http.require_auth` | `true` | Bearer gate for `/mcp` |
+| `http.request_timeout_seconds` | `30` | Deadline per request, response body included |
+| `http.max_request_bytes` | `1048576` | Request body cap |
+| `http.session_expiry_seconds` | `3600` | Idle session timeout |
+| `http.allowed_origins` | `[]` | Empty means any request carrying `Origin` is refused |
+
+Validate without starting anything:
+
+```powershell
+.\target\release\discord-mcp.exe --validate-config --config config\local.toml
+```
+
+Success prints `configuration valid (source: …)` plus the transport and whether a
+bot token is present, on **stderr**. Exit code `0` means valid, `2` means a usage
+or configuration error.
+
+Example hardening config — one guild only, reads only:
+
+```toml
+# config/local.toml
+[server]
+transport = "stdio"
+
+[policy]
+read_enabled = true
+guild_allowlist = ["1572365819281932408"]   # test_mcp_server
+```
+
+---
+
+## 6. Use over STDIO
+
+STDIO is the default: no listening socket, one client per process, stdin/stdout
+carry MCP frames and every diagnostic goes to stderr.
+
+```powershell
+$env:DISCORD_BOT_TOKEN = "<token>"
+.\target\release\discord-mcp.exe serve
+```
+
+Wire it into any MCP client that launches a stdio server. For Claude Desktop the
+file is `%APPDATA%\Claude\claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "discord": {
+      "command": "D:\\AI\\build\\discord\\working_discord_mcp\\target\\release\\discord-mcp.exe",
+      "args": ["serve"],
+      "env": { "DISCORD_BOT_TOKEN": "<set this in the client, not in git>" }
+    }
+  }
+}
+```
+
+To use a custom configuration, add `"--config", "D:\\...\\config\\local.toml"` to
+`args`.
+
+### What the server exposes
+
+| Tool | Arguments | Reads |
+|---|---|---|
+| `discord_list_guilds` | `limit?`, `after?` | Guilds the bot is in |
+| `discord_get_guild` | `guild_id` | One guild |
+| `discord_list_channels` | `guild_id` | Channels the bot can see |
+| `discord_get_channel` | `channel_id` | One channel |
+| `discord_get_messages` | `channel_id`, `limit?`, `before?`, `after?` | A page of history, newest first |
+| `discord_get_message` | `channel_id`, `message_id` | One message |
+| `discord_list_members` | `guild_id`, `limit?`, `after?` | Guild members (needs Server Members intent) |
+| `discord_get_member` | `guild_id`, `user_id` | One member |
+
+Resource: `discord://guilds` — the same guild listing as a resource, for clients
+that prefer resources over tools.
+
+Argument schemas reject unknown fields, and Discord snowflakes are decimal
+strings (`"1572365819281932408"`), never numbers.
+
+A first call to try — `discord_list_guilds` with no arguments — returns:
+
+```json
+{"items":[{"id":"1572365819281932408","name":"test_mcp_server","icon_hash":null,"owner":false}],"next_cursor":null}
+```
+
+`next_cursor` is the value to pass back as `after` for the next page. Read tools
+return Discord's data as JSON text inside the MCP result; failures come back as
+`isError` results whose text begins with a stable code: `INVALID_ARGUMENT`,
+`POLICY_BLOCKED`, `AUTHENTICATION_FAILED`, `PERMISSION_DENIED`,
+`RESOURCE_NOT_FOUND`, `RATE_LIMITED`, `TIMEOUT`, `NETWORK_ERROR`,
+`DISCORD_API_ERROR`, `CONFIGURATION_ERROR`, `INTERNAL_ERROR`.
+
+---
+
+## 7. Use over HTTP
+
+For clients that speak MCP Streamable HTTP instead of spawning a process.
+
+```toml
+# config/local-http.toml
+[server]
+transport = "http"
+
+[http]
+host = "127.0.0.1"
+port = 8787
+require_auth = true
+auth_token_env = "DISCORD_MCP_HTTP_TOKEN"
+```
+
+```powershell
+$env:DISCORD_BOT_TOKEN = "<token>"
+$env:DISCORD_MCP_HTTP_TOKEN = "<at least 16 characters>"
+.\target\release\discord-mcp.exe serve --config config\local-http.toml
+```
+
+Endpoint: `POST http://127.0.0.1:8787/mcp` with
+`Authorization: Bearer $env:DISCORD_MCP_HTTP_TOKEN`.
+
+Full request sequence (Windows PowerShell 5.1; `curl.exe` ships with Windows):
+
+```powershell
+# Bodies go through files: PowerShell 5.1 strips embedded quotes when a literal
+# JSON string is passed to a native command, so the request arrives malformed.
+Set-Content target\init.json  -NoNewline -Value '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"curl","version":"0.1.0"}}}'
+Set-Content target\ready.json -NoNewline -Value '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+Set-Content target\call.json  -NoNewline -Value '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"discord_get_guild","arguments":{"guild_id":"1572365819281932408"}}}'
+
+$url   = "http://127.0.0.1:8787/mcp"
+$token = $env:DISCORD_MCP_HTTP_TOKEN
+
+# 1. initialize — the response headers carry Mcp-Session-Id
+curl.exe -s --max-time 15 -D target\headers.txt -o NUL -X POST $url `
+  -H "Authorization: Bearer $token" -H "Content-Type: application/json" `
+  -H "Accept: application/json, text/event-stream" -d "@target\init.json"
+$sid = (Get-Content target\headers.txt |
+  Select-String -Pattern '^mcp-session-id:\s*(\S+)').Matches[0].Groups[1].Value
+"session id: $sid"
+
+# 2. acknowledge (a notification: accepted, no response body)
+curl.exe -s --max-time 15 -o NUL -w "initialized: %{http_code}" -X POST $url `
+  -H "Authorization: Bearer $token" -H "Content-Type: application/json" `
+  -H "Accept: application/json, text/event-stream" -H "Mcp-Session-Id: $sid" `
+  -d "@target\ready.json"
+""
+
+# 3. call a tool. The answer arrives as SSE events; `--max-time` only bounds this
+# curl, not the session.
+curl.exe -s --max-time 15 -X POST $url `
+  -H "Authorization: Bearer $token" -H "Content-Type: application/json" `
+  -H "Accept: application/json, text/event-stream" -H "Mcp-Session-Id: $sid" `
+  -d "@target\call.json"
+```
+
+What the responses mean:
+
+| Response | Meaning |
+|---|---|
+| `200` + `text/event-stream` | Normal; the JSON-RPC message is in the `data:` payload |
+| `202` | Notification accepted |
+| `400` | Missing/invalid `Mcp-Session-Id`, or a malformed body |
+| `401` + `WWW-Authenticate: Bearer` | No token, or a wrong one |
+| `403` | `Host` is not this server's bind, or `Origin` is not in `allowed_origins` |
+| `504` | The request outlived `http.request_timeout_seconds` |
+
+Notes for operators:
+
+- The listener is loopback-only unless `http.allow_non_loopback = true`, and
+  configuration validation refuses a non-loopback bind without
+  `require_auth = true` and explicit `allowed_origins`.
+- `Host` must be the bind address (or `localhost` when bound to loopback). This
+  blocks DNS-rebinding attacks; a hostname that resolves to `127.0.0.1` is
+  refused.
+- With `allowed_origins = []` (the default) any request carrying `Origin` is
+  refused, so a browser page cannot drive the server. CORS is not authentication.
+- **TLS is not implemented.** For a non-loopback bind, put a reverse proxy in
+  front and keep the server on plain HTTP behind it.
+- Idle sessions are closed after `http.session_expiry_seconds`; `GET /mcp` is the
+  long-lived event stream and is exempt from the request deadline.
+- `transport = "both"` runs STDIO and HTTP in one process over the same policy
+  and the same bot token.
+
+---
+
+## 8. Verify the installation
+
+Run these in order; each one isolates a different layer.
+
+1. **Configuration** — `discord-mcp.exe --validate-config` → exit `0`, and it
+   reports `bot token: present`.
+2. **Discord credentials** — ask for the guild list over STDIO. A `401` here
+   means the bot token is wrong; `AUTHENTICATION_FAILED` is the tool result text.
+3. **Guild visibility** — `discord_list_guilds` contains your server. If it does
+   not, the bot was never invited (§2.4).
+4. **Channel reads** — `discord_list_channels` then `discord_get_messages` on a
+   channel. Text coming back proves permissions, intent and the model mapping.
+5. **Refusals still fail closed** — `guild_id: "abc"` must return
+   `INVALID_ARGUMENT`, and a `limit` above `policy.max_messages_per_read` must be
+   refused rather than clamped.
+6. **HTTP gate** — with the server running: no token → `401`, wrong token →
+   `401`, `Host: rebind.example` → `403`, `Origin: https://evil.example` → `403`,
+   correct token → `200`.
+
+A quick scripted STDIO smoke test (PowerShell), which prints the JSON-RPC
+responses and nothing else:
+
+```powershell
+$init = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"smoke","version":"0.1.0"}}}'
+$note = '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+$call = '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"discord_list_guilds","arguments":{"limit":10}}}'
+@($init, $note, $call) | .\target\release\discord-mcp.exe serve
+```
+
+Not covered by this guide: launching the server from a Windows desktop MCP client
+end to end. The stdio contract is exercised by process-level tests against the
+real binary, but a specific client's launch behaviour is unverified here.
+
+---
+
+## 9. Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Exit `2`, `DISCORD_BOT_TOKEN` missing | `serve` without a token | Load `.env` or set the variable (§4) |
+| Exit `2`, `http.host … must be a loopback address` | Non-loopback bind without opt-in | Set `allow_non_loopback = true`, `require_auth = true`, non-empty `allowed_origins` |
+| Exit `2`, `cannot bind …` | Port already in use | Change `http.port` |
+| Tool result `AUTHENTICATION_FAILED` | Wrong/revoked bot token, or a user token | Reset the bot token and update `.env` |
+| Tool result `content: null` for every message | Message Content intent is off | Enable it and confirm the Save dialog (§2.3) |
+| Member tools return a permission error | Server Members intent is off | Enable it in the same section |
+| Tool result `RESOURCE_NOT_FOUND` / `404` | Wrong ID, or the bot cannot see that channel | Re-read `discord_list_channels` |
+| Tool result `POLICY_BLOCKED` | Guild/channel not in the allowlist, or reads disabled | Adjust `policy.*` |
+| HTTP `401` | Missing/wrong bearer token | Check `DISCORD_MCP_HTTP_TOKEN` and the client header |
+| HTTP `403` | Foreign `Host` or `Origin` | Call the bind address; add the origin to `allowed_origins` if a browser must reach it |
+| HTTP `400` | Missing `Mcp-Session-Id` on a follow-up request | Reuse the id returned by `initialize` |
+| Nothing on stdout | Normal until a client sends a frame — stdout is protocol-only | Logs are on stderr; set `RUST_LOG=debug` |
+
+Exit codes: `0` success, `1` internal failure, `2` usage/configuration error,
+`3` authentication failure, `4` policy refusal.
+
+---
+
+## 10. Security checklist
+
+- The bot token lives in the environment or `.env` (git-ignored), never in a
+  config file, client config, screenshot or commit.
+- The HTTP token is given to MCP clients; the bot token never is.
+- Keep `policy.write_enabled = false` and `policy.allow_mass_mentions = false`.
+  This build ships no write tools, so nothing can post regardless.
+- Narrow `policy.guild_allowlist` and `policy.channel_allowlist` if the bot is in
+  more than one server.
+- Keep the HTTP bind on loopback. For remote access, use a reverse proxy that
+  terminates TLS and enforces its own authentication as well.
+- Logs are stderr-only and redact secrets structurally; message bodies are not
+  logged (`logging.redact_message_content = true`).
+- Treat every message body the tools return as untrusted data: it is content
+  written by other people, not instructions for the model.
+
+## 11. Removing the setup
+
+1. In the Developer Portal, **Bot → Reset Token** revokes the old token
+   immediately.
+2. Remove the bot from the server: Server Settings → Integrations, or kick the
+   bot role.
+3. Delete the application in the Developer Portal to retire the identity.
+4. Delete `.env` and any `config/local*.toml` from the working copy.
