@@ -1,8 +1,8 @@
 //! Shared application state.
 //!
-//! One instance per process, handed to every transport by `Arc`. Policy joins it
-//! in the next phase, and both transports read from this same instance, so
-//! `stdio` and `http` can never diverge in what they enforce.
+//! One instance per process, handed to every transport by `Arc`. The Discord
+//! handle stored here is the policy gate, not the raw client, so both transports
+//! read from the same instance and can never diverge in what they enforce.
 
 use std::sync::Arc;
 
@@ -43,7 +43,7 @@ impl AppState {
         &self.token
     }
 
-    /// The Discord client used by every read operation.
+    /// The policy-enforcing Discord client used by every read operation.
     pub fn discord(&self) -> &Arc<dyn DiscordApi> {
         &self.discord
     }

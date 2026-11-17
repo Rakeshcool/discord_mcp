@@ -75,16 +75,41 @@ session, and no database — the process holds nothing beyond the current call.
 - **No destructive tools exist.** Delete and edit tools are not registered in
   v1. There is no trustworthy MCP approval channel available, so the safe
   implementation is the absent one.
-- **No message-content logging by default.** `redact_message_content = true`;
-  turning it off is reported as a startup warning.
+- **Policy is enforced, not advisory.** `PolicyGate` wraps the Discord client and
+  `AppState` stores only the wrapped handle, so no tool can reach Discord without
+  passing the allowlists, feature flags, page-size ceiling and concurrency cap.
+  The gate resolves a channel's guild (one extra request) before a channel-scoped
+  read when `policy.guild_allowlist` is non-empty, and refuses a channel that
+  belongs to no guild in that configuration.
+- **Allowlists narrow visibility too.** `discord_list_guilds` filters its page to
+  allowlisted guilds, so a guild allowlist cannot be inferred from the listing.
+  The opaque pagination cursor is left untouched so paging still advances.
+- **Risk classification is deny-by-default.** Every tool name is classified as
+  read, write or destructive; an unclassified name is a `POLICY_BLOCKED` denial,
+  never an implicit permission.
+- **Limits are authority limits.** A page size above
+  `policy.max_messages_per_read` is an `INVALID_ARGUMENT` error rather than a
+  silent truncation, and message bodies are measured in characters against
+  `policy.max_message_characters`.
+- **Mentions are neutralised, not trusted.** `sanitize_mentions` breaks
+  `@everyone`, `@here`, user and role mentions with a zero-width space; the
+  write path composes this through `Policy::prepare_outgoing_message`.
+- **Concurrency is capped by backpressure.** `policy.max_concurrent_requests`
+  bounds in-flight Discord requests with a semaphore. Waiting cannot fail open:
+  a caller only proceeds when a slot frees.
+- **Audit records are content-free.** Each policy decision produces an
+  `AuditEvent` (action, target IDs, outcome, category) through an injectable
+  `AuditSink`; the shipping sink logs to stderr, denials at `info`. There is no
+  field in which a message body or token could be recorded.
 
 ## 5. Data handling
 
 - The process does not persist Discord data. There is no cache, database or
   message archive.
 - Message bodies are fetched per call and dropped after the response is built.
-- Audit records (from the write phase onward) will contain the action, target
-  IDs, outcome, timestamp and correlation ID — never content, never credentials.
+- Audit records contain the action, target IDs, outcome and error category —
+  never content, never credentials. Timestamps and correlation IDs join them with
+  the write phase, which is the first place a durable record is required.
 - Configuration files hold no secrets. Only environment variable **names**
   appear in configuration and in `.env.example`.
 
@@ -103,7 +128,6 @@ session, and no database — the process holds nothing beyond the current call.
 | Control | Phase |
 |---|---|
 | Discord adapter, rate-limit handling, error mapping | Phase 2 |
-| Policy engine (allowlists, classification, limits, audit events) | Phase 3 |
 | Read tools, resources, prompts over MCP | Phase 4 |
 | Streamable HTTP transport, bearer-token gate for non-loopback | Phase 5 |
 | `discord_send_message` with pre-flight policy and audit record | Phase 6 |

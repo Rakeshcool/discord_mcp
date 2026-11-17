@@ -112,7 +112,7 @@ match the version rmcp exposes, and it will be recorded here when Phase 5 lands.
 | Crate | Version | Role |
 |---|---|---|
 | `rmcp` | 3.11.0 | MCP protocol, STDIO and Streamable HTTP server transports |
-| `tokio` | 1.54.1 | Async runtime (`rt-multi-thread`, `io-std`, `io-util`, `time`, `net`, `signal`, `macros`) |
+| `tokio` | 1.54.1 | Async runtime (`rt-multi-thread`, `io-std`, `io-util`, `time`, `net`, `signal`, `macros`, `sync` for the policy concurrency cap) |
 | `serde` | 1.0.229 | Configuration and protocol deserialization |
 | `toml` | 1.2.1 | Configuration parsing |
 | `thiserror` | 2.0.21 | Typed error enums (`ConfigError`) |

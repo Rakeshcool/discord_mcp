@@ -1,13 +1,27 @@
 //! Policy engine.
 //!
-//! MCP is the interface, not the permission system. This module will hold the
-//! decisions that gate every tool call, applied in the application layer before
-//! any Discord request:
+//! MCP is the interface, not the permission system. Decisions here are made in
+//! the application layer from local configuration, before any Discord request is
+//! built, and Discord message content can never influence them.
 //!
-//! - feature flags (`read_enabled`, `write_enabled`),
-//! - guild and channel allowlists,
-//! - per-tool risk classification: read, write, destructive,
-//! - limits for message reads, message length and concurrency,
-//! - parsed-mention default-deny,
-//! - the approval abstraction for destructive actions, which fails closed when
-//!   no trustworthy approval flow exists.
+//! - [`rules`] — feature flags, allowlists, risk classification, limits and
+//!   mention neutralisation, as pure functions of configuration and the request.
+//! - [`gate`] — the enforcing decorator that wraps the Discord client, so a tool
+//!   cannot reach Discord without passing the rules.
+//! - [`approval`] — the fail-closed approval abstraction for destructive actions.
+//! - [`audit`] — content-free records of what policy decided.
+//!
+//! Writes stay disabled by default and destructive tools do not exist, so no
+//! code path here can delete or alter Discord data.
+
+pub mod approval;
+pub mod audit;
+pub mod gate;
+pub mod rules;
+
+pub use approval::{
+    Approval, ApprovalRequest, ApprovalSource, UnavailableApproval, authorize_destructive,
+};
+pub use audit::{AuditEvent, AuditOutcome, AuditSink, AuditTarget, LoggingAudit};
+pub use gate::PolicyGate;
+pub use rules::{Policy, SanitizedMessage, ToolRisk, classify_tool, sanitize_mentions};
