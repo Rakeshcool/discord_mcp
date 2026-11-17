@@ -90,6 +90,13 @@ MCP client configuration over stdio (once tools are available):
 }
 ```
 
+Reading message **text** needs the **Message Content** privileged intent on the
+bot (Developer Portal → Bot → Privileged Gateway Intents). Without it Discord
+returns empty `content`, `embeds` and `attachments` in REST responses as well as
+gateway events, so `discord_get_messages` reports `content: null` for every
+message the bot did not send itself — the tool is working, the data is withheld.
+`GUILD_MEMBERS` is the equivalent toggle for the member tools.
+
 ### Streamable HTTP
 
 ```toml
