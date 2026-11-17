@@ -17,12 +17,14 @@ name = "discord-mcp"
 path = "src/main.rs"
 
 [dependencies]
+async-trait = "=0.1.92"
 # MCP SDK. `server` (a default feature) already pulls in `schemars` and
 # `transport-async-rw`; the two transports below are added explicitly.
 rmcp = { version = "=3.11.0", features = [
     "transport-io",
     "transport-streamable-http-server",
 ] }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "logging", "tls12"] }
 secrecy = "=0.10.3"
 serde = { version = "=1.0.229", features = ["derive"] }
 thiserror = "=2.0.21"
@@ -38,6 +40,8 @@ tokio = { version = "=1.54.1", features = [
 toml = "=1.2.1"
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "fmt"] }
+twilight-http = "=0.18.0"
+twilight-model = "=0.18.0"
 
 [dev-dependencies]
 serde_json = "=1.0.154"
