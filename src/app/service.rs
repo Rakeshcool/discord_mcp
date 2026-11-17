@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use crate::app::state::AppState;
 use crate::config::{Config, TransportMode};
+use crate::discord::adapter::TwilightDiscord;
 use crate::error::AppError;
 use crate::observability::logging;
 use crate::security::secrets::BotToken;
@@ -29,10 +30,12 @@ pub struct AppService {
 }
 
 impl AppService {
-    /// Full startup: resolve the token, install logging, build shared state.
+    /// Full startup: resolve the token, build the Discord client, install
+    /// logging, then hand the transport a complete state.
     pub fn bootstrap(config: Config) -> Result<Self, AppError> {
         let token = BotToken::from_env(&config.discord.token_env)?;
-        let state = Arc::new(AppState::new(config, token));
+        let discord = TwilightDiscord::new(&config.discord, &token)?;
+        let state = Arc::new(AppState::new(config, token, Arc::new(discord)));
         logging::init(&state.config().logging)?;
         tracing::info!(
             server = %state.config().server.name,

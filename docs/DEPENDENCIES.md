@@ -62,19 +62,44 @@ Verified from `~/.cargo/registry/src/*/rmcp-3.11.0`.
   `Retry-After` handling are exactly what a hand-rolled client gets wrong.
 - MSRV 1.89, which is why the crate MSRV is 1.89.
 
-### Mock-server strategy for integration tests (Phase 2 risk, resolved in design)
+### Mock-server strategy for integration tests (resolved)
 
-`twilight-http` has no first-class base-URL override. The plan is:
+`twilight-http` has no base-URL override, but `ClientBuilder::proxy(host,
+use_http)` — verified in `twilight-http-0.18.0/src/client/mod.rs` — rewrites every
+request to `{scheme}://{host}/api/v{API_VERSION}/{path}`. That is the hook
+twilight documents for running through an HTTP proxy, and it is what the adapter
+uses, so no route needs a fallback transport:
 
-1. All application code depends on an application-owned `DiscordApi` trait, not
-   on twilight types. Domain-level tests use a in-memory fake implementing that
-   trait — this is where pagination and policy interaction are tested.
-2. HTTP-level behaviour (status mapping, 429 handling, malformed bodies) is
-   tested through twilight's proxy support aimed at a local mock server, plus a
-   smoke test that the real client is constructed with the configured base URL.
-3. If the proxy path turns out to be unusable for a route, the fallback is a
-   narrow `reqwest` transport behind the same trait for that route only, and
-   this document is updated before that code is written.
+- All application code depends on the application-owned `DiscordApi` trait in
+  `src/discord/client.rs`; twilight types never leave `src/discord/adapter.rs`.
+- The adapter derives the proxy authority from `discord.api_base`.
+  `https://discord.com/api` is used directly; any other base (a loopback mock, or
+  an operator's explicit proxy) goes through `proxy(authority, use_http)`.
+- `discord.api_base` must end in `/api`, and plaintext `http` is refused for any
+  non-loopback authority, so a misconfigured base cannot silently strip TLS to a
+  remote host.
+- `tests/integration/mock_discord.rs` is a hand-rolled tokio `TcpListener` that
+  answers with canned JSON, records the requests it saw and can delay or fail on
+  demand. No extra test-server dependency, no `reqwest` fallback: the tests drive
+  the shipped client over a real socket.
+- 429 handling (including `Retry-After`) belongs to twilight's ratelimiter and is
+  covered through the same mock. The adapter's own retry loop handles only
+  transient failures — network errors, timeouts and 5xx — bounded by
+  `discord.max_retries` with jittered backoff, and every attempt is wrapped in the
+  configured `request_timeout_seconds`, so a rate-limit wait cannot exceed it.
+- Page sizes are clamped to Discord's documented maxima before any request is
+  built (guilds 200, messages 100, members 1000); an out-of-range limit is an
+  `INVALID_ARGUMENT`, not a `400` from Discord. A full page yields `next_cursor`
+  from the last id, so callers paginate by passing it back as the cursor.
+
+### TLS crypto provider — `rustls 0.23.46` with `ring`
+
+`twilight-http` depends on `rustls` with `default-features = false`, so rustls
+0.23 cannot pick a process-wide `CryptoProvider` and the first TLS handshake
+would panic. The adapter installs `ring`'s provider exactly once
+(`install_crypto_provider`, via `std::sync::Once`) and the crate pins the `rustls`
+version already in the lock file with that provider enabled. `ring` is chosen over
+`aws-lc-rs` because it builds on Windows MSVC without CMake or NASM.
 
 ### HTTP serving (Phase 5)
 
@@ -94,6 +119,10 @@ match the version rmcp exposes, and it will be recorded here when Phase 5 lands.
 | `tracing` | 0.1.44 | Structured diagnostics |
 | `tracing-subscriber` | 0.3.23 | `fmt` subscriber, `env-filter` for `RUST_LOG` |
 | `secrecy` | 0.10.3 | `SecretBox`/`SecretString` with zeroize-on-drop |
+| `twilight-http` | 0.18.0 | Discord REST client (rate limiting, 429 handling, proxy hook) |
+| `twilight-model` | 0.18.0 | Discord API models, confined to the adapter layer |
+| `async-trait` | 0.1.92 | `dyn`-compatible `DiscordApi` trait |
+| `rustls` | 0.23.46 | TLS, `ring` provider selected at startup; no default features |
 | `serde_json` (dev) | 1.0.154 | Parsing protocol frames in the protocol tests |
 
 `secrecy` 0.10 exposes `pub type SecretString = SecretBox<str>` and the

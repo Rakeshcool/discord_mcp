@@ -32,21 +32,25 @@ Legend: `TODO` = not started · `IN PROGRESS` = active · `DONE` = verified comp
 
 ## Phase 2 — Discord client adapter
 
-- [ ] Implement bot-token authentication from environment/credential store.
-- [ ] Implement typed Discord client abstraction.
-- [ ] Implement snowflake ID newtypes or validated string types.
-- [ ] Implement guild listing and guild lookup.
-- [ ] Implement channel listing and channel lookup.
-- [ ] Implement bounded message history retrieval.
-- [ ] Implement message lookup.
-- [ ] Implement member lookup/listing only where supported and permitted.
-- [ ] Implement pagination and stable ordering.
-- [ ] Implement request timeouts.
-- [ ] Implement rate-limit handling and bounded retry policy.
-- [ ] Map Discord HTTP errors to internal error categories.
-- [ ] Add mock-based adapter tests.
+- [x] Implement bot-token authentication from environment/credential store.
+- [x] Implement typed Discord client abstraction.
+- [x] Implement snowflake ID newtypes or validated string types.
+- [x] Implement guild listing and guild lookup.
+- [x] Implement channel listing and channel lookup.
+- [x] Implement bounded message history retrieval.
+- [x] Implement message lookup.
+- [x] Implement member lookup/listing only where supported and permitted.
+- [x] Implement pagination and stable ordering.
+- [x] Implement request timeouts.
+- [x] Implement rate-limit handling and bounded retry policy.
+- [x] Map Discord HTTP errors to internal error categories.
+- [x] Add mock-based adapter tests.
 
 **Exit criteria:** Read-only Discord operations work against mocks and an optional test bot.
+
+Met against mocks: 22 adapter tests run the real twilight client over a local
+socket (`tests/integration`). No live test bot was used, so live-endpoint
+behaviour rests on the documented API contract rather than an observed call.
 
 ## Phase 3 — Security and policy engine
 

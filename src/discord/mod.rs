@@ -1,15 +1,23 @@
 //! Discord adapter.
 //!
-//! This module owns everything Discord-specific and nothing MCP-specific.
-//! Later phases add:
+//! Everything Discord-specific lives here and nothing MCP-specific does:
 //!
-//! - `client` — the `DiscordApi` trait the application layer talks to, plus the
-//!   twilight-http implementation behind it,
-//! - `models` — request and response types. They never leave this module; the
-//!   application service sees only its own domain types,
-//! - `errors` — mapping of Discord status codes onto
-//!   [`crate::error::ErrorCategory`],
-//! - `rate_limit` — bucket-aware waits and the bounded retry policy.
+//! - [`ids`] — validated snowflake newtypes, so IDs stay strings on the wire and
+//!   integers in memory,
+//! - [`models`] — this crate's own guild, channel, message and member types,
+//! - [`client`] — the application-owned [`DiscordApi`] trait,
+//! - [`adapter`] — the twilight-http implementation behind that trait,
+//! - [`errors`] — Discord failures mapped onto the stable error categories,
+//! - [`rate_limit`] — rate-limit delegation and the bounded read retry policy.
 //!
 //! Only the official bot API is used: no user tokens, no self-bot paths, no
 //! undocumented endpoints.
+
+pub mod adapter;
+pub mod client;
+pub mod errors;
+pub mod ids;
+pub mod models;
+pub mod rate_limit;
+
+pub use client::DiscordApi;

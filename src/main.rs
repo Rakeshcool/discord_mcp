@@ -130,7 +130,6 @@ fn run() -> Result<ExitCode, AppError> {
         Command::Serve => {
             let path = resolve_config_path(config_path);
             let config = load::load(path.as_deref())?;
-            let service = AppService::bootstrap(config)?;
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
                 .enable_all()
@@ -138,6 +137,9 @@ fn run() -> Result<ExitCode, AppError> {
                 .map_err(|error| {
                     AppError::internal(format!("failed to start the async runtime: {error}"))
                 })?;
+            // The Discord client registers its rate-limit state with the Tokio
+            // reactor, so bootstrap must run inside it.
+            let service = runtime.block_on(async { AppService::bootstrap(config) })?;
             runtime.block_on(service.run())?;
             drop(runtime);
             Ok(ExitCode::SUCCESS)
