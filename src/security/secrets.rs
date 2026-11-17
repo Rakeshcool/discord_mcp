@@ -14,9 +14,6 @@ use secrecy::{ExposeSecret, SecretString};
 
 use crate::error::ConfigError;
 
-/// Default environment variable holding the bot token.
-pub const DEFAULT_TOKEN_ENV: &str = "DISCORD_BOT_TOKEN";
-
 /// Shortest value a Discord bot token can plausibly have.
 const MIN_TOKEN_LEN: usize = 50;
 
@@ -66,15 +63,13 @@ impl BotToken {
             reason: reason.to_string(),
         };
 
-        if raw.trim() != raw {
-            return Err(reject("it has leading or trailing whitespace"));
-        }
         if raw.is_empty() {
             return Err(reject("it is empty"));
         }
+        // Also covers surrounding whitespace and a pasted `Bot ` prefix.
         if raw.chars().any(char::is_whitespace) {
             return Err(reject(
-                "it contains whitespace; paste the raw token without a `Bot ` prefix",
+                "it contains whitespace; paste the raw token without a `Bot ` prefix or surrounding spaces",
             ));
         }
         if raw.chars().any(char::is_control) {

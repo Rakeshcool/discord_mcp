@@ -178,11 +178,13 @@ fn token_variable_must_be_an_environment_name() {
 
 #[test]
 fn allowlists_accept_only_snowflake_ids() {
-    let message = rejection("[policy]\nchannel_allowlist = [\"general\"]\n");
-    assert!(
-        message.contains("policy.channel_allowlist"),
-        "unexpected message: {message}"
-    );
+    for entry in ["general", "000123456789012345", ""] {
+        let message = rejection(&format!("[policy]\nchannel_allowlist = [\"{entry}\"]\n"));
+        assert!(
+            message.contains("policy.channel_allowlist"),
+            "`{entry}` should be rejected: {message}"
+        );
+    }
 
     accepted("[policy]\nchannel_allowlist = [\"1234567890123456789\"]\n");
 }

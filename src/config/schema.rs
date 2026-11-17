@@ -305,9 +305,10 @@ impl HttpConfig {
 
         for origin in &self.allowed_origins {
             let origin = origin.trim();
-            let acceptable =
-                origin == "null" || origin.starts_with("https://") || origin.starts_with("http://");
-            if !acceptable {
+            if !(origin == "null"
+                || origin.starts_with("https://")
+                || origin.starts_with("http://"))
+            {
                 return Err(ConfigError::invalid(
                     "http.allowed_origins",
                     format!(
@@ -346,30 +347,25 @@ impl DiscordConfig {
                 "must not end with `/`",
             ));
         }
-        if !base.starts_with("https://") {
-            if !base.starts_with("http://") {
-                return Err(ConfigError::invalid(
-                    "discord.api_base",
-                    "must be an absolute http(s) URL",
-                ));
-            }
+        if let Some(rest) = base.strip_prefix("http://") {
             if !self.allow_insecure_transport {
                 return Err(ConfigError::invalid(
                     "discord.api_base",
                     "must use https; set discord.allow_insecure_transport only when pointing at a loopback mock server",
                 ));
             }
-            let host = base
-                .trim_start_matches("http://")
-                .split(['/', ':'])
-                .next()
-                .unwrap_or_default();
+            let host = rest.split(['/', ':']).next().unwrap_or_default();
             if !is_loopback_host(host) {
                 return Err(ConfigError::invalid(
                     "discord.api_base",
                     "may use plaintext http only for a loopback host",
                 ));
             }
+        } else if !base.starts_with("https://") {
+            return Err(ConfigError::invalid(
+                "discord.api_base",
+                "must be an absolute http(s) URL",
+            ));
         }
 
         if !is_valid_env_name(self.token_env.trim()) {
@@ -469,13 +465,15 @@ fn is_valid_env_name(name: &str) -> bool {
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// Whether `id` looks like a Discord snowflake ID: digits only, non-zero.
+/// Whether `id` looks like a Discord snowflake ID: digits only, no leading zero.
 pub fn is_snowflake_like(id: &str) -> bool {
     let id = id.trim();
-    !id.is_empty()
-        && id.len() <= MAX_SNOWFLAKE_LEN
+    id.len() <= MAX_SNOWFLAKE_LEN
+        && id
+            .bytes()
+            .next()
+            .is_some_and(|first| first.is_ascii_digit() && first != b'0')
         && id.bytes().all(|byte| byte.is_ascii_digit())
-        && id.bytes().any(|byte| byte != b'0')
 }
 
 fn validate_allowlist(field: &'static str, ids: &[String]) -> Result<(), ConfigError> {
