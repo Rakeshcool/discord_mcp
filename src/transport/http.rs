@@ -12,23 +12,29 @@
 //! 4. a present `Origin` must match `http.allowed_origins`; with an empty list any
 //!    `Origin`-bearing request is refused, so a browser cannot drive this server
 //!    by accident,
-//! 5. the MCP service itself caps request bodies and validates media types.
+//! 5. a request must finish within `http.request_timeout_seconds`, and an idle
+//!    session is closed after `http.session_expiry_seconds`,
+//! 6. the MCP service itself caps request bodies and validates media types.
 //!
 //! Nothing is authenticated by `Host` or `Origin` alone — they are anti-CSRF and
 //! anti-rebinding checks, and the bearer token is the authentication.
 
 use std::collections::BTreeSet;
+use std::fmt;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
+use axum::body::{Body, Bytes};
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
 use rmcp::transport::streamable_http_server::StreamableHttpService;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use tokio::net::TcpListener;
+use tokio_stream::StreamExt as _;
 
 use crate::app::state::AppState;
 use crate::config::schema::{HttpConfig, is_loopback_host};
@@ -63,7 +69,7 @@ pub async fn serve(state: Arc<AppState>) -> Result<(), AppError> {
             let state = Arc::clone(&state);
             move || Ok(DiscordMcpServer::new(Arc::clone(&state)))
         },
-        Arc::new(LocalSessionManager::default()),
+        Arc::new(session_manager(&config)),
         service_config(&config),
     );
 
@@ -74,6 +80,13 @@ pub async fn serve(state: Arc<AppState>) -> Result<(), AppError> {
                 token: token.clone(),
             },
             require_bearer,
+        ))
+        // Outermost, so the deadline covers authentication and MCP handling too.
+        .layer(middleware::from_fn_with_state(
+            Limits {
+                request: Duration::from_secs(config.request_timeout_seconds),
+            },
+            limit_request_time,
         ));
 
     let listener = TcpListener::bind((config.host.as_str(), config.port))
@@ -93,6 +106,8 @@ pub async fn serve(state: Arc<AppState>) -> Result<(), AppError> {
         path = MCP_PATH,
         authentication = config.require_auth,
         origins = config.allowed_origins.len(),
+        request_timeout_seconds = config.request_timeout_seconds,
+        session_expiry_seconds = config.session_expiry_seconds,
         "MCP HTTP server listening"
     );
 
@@ -100,6 +115,18 @@ pub async fn serve(state: Arc<AppState>) -> Result<(), AppError> {
         .await
         .map_err(|error| AppError::internal(format!("the HTTP transport stopped: {error}")))?;
     Ok(())
+}
+
+/// The session manager, with the configured idle expiry.
+///
+/// `SessionConfig::keep_alive` is the SDK's "close the session after this much
+/// inactivity" timer, which is what `http.session_expiry_seconds` means. The SDK
+/// default is 5 minutes; the configured value replaces it rather than being
+/// layered on top.
+fn session_manager(config: &HttpConfig) -> LocalSessionManager {
+    let mut manager = LocalSessionManager::default();
+    manager.session_config.keep_alive = Some(Duration::from_secs(config.session_expiry_seconds));
+    manager
 }
 
 /// rmcp's service settings, derived from validated configuration.
@@ -188,6 +215,72 @@ fn unauthorized() -> Response {
         .into_response()
 }
 
+/// Per-request limits the HTTP layer enforces itself.
+#[derive(Clone, Copy)]
+struct Limits {
+    request: Duration,
+}
+
+/// Bound how long one request may take, headers and response body together.
+///
+/// A timeout on the handler alone would be a placebo here: the MCP service
+/// returns an SSE response as soon as it starts streaming, so a stalled tool
+/// call would keep an "already answered" request alive indefinitely. The
+/// deadline therefore covers the response body too and ends it with an error.
+///
+/// `GET` is exempt: that route is the session's long-lived standalone event
+/// stream, and expiring it would disconnect every subscribed client.
+async fn limit_request_time(
+    State(limits): State<Limits>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if request.method() == Method::GET {
+        return next.run(request).await;
+    }
+
+    let deadline = tokio::time::Instant::now() + limits.request;
+    let response = match tokio::time::timeout_at(deadline, next.run(request)).await {
+        Ok(response) => response,
+        Err(_) => return gateway_timeout(),
+    };
+
+    let (parts, body) = response.into_parts();
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    let body = Body::from_stream(body.into_data_stream().timeout(remaining).map(
+        |item| -> Result<Bytes, BoxError> {
+            match item {
+                Ok(Ok(chunk)) => Ok(chunk),
+                Ok(Err(error)) => Err(Box::new(error)),
+                Err(_) => Err(Box::new(RequestTimedOut)),
+            }
+        },
+    ));
+    Response::from_parts(parts, body)
+}
+
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// Marker for a response body cut off by the request deadline.
+#[derive(Debug)]
+struct RequestTimedOut;
+
+impl fmt::Display for RequestTimedOut {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("the request exceeded http.request_timeout_seconds")
+    }
+}
+
+impl std::error::Error for RequestTimedOut {}
+
+fn gateway_timeout() -> Response {
+    (
+        StatusCode::GATEWAY_TIMEOUT,
+        "request timed out: http.request_timeout_seconds elapsed\n",
+    )
+        .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,6 +335,106 @@ mod tests {
             settings.allowed_origins,
             vec!["https://app.example.com".to_string()]
         );
+    }
+
+    #[test]
+    fn the_session_manager_uses_the_configured_expiry() {
+        let mut configured = config("127.0.0.1", 8787);
+        configured.session_expiry_seconds = 120;
+
+        let manager = session_manager(&configured);
+        assert_eq!(
+            manager.session_config.keep_alive,
+            Some(Duration::from_secs(120)),
+            "the configured expiry must replace the SDK default, not be ignored"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_response_body_that_outlives_the_deadline_is_cut_off() {
+        use axum::routing::post;
+        use tower::ServiceExt as _;
+
+        async fn slow_body() -> Body {
+            let chunks =
+                tokio_stream::iter(vec![Bytes::from_static(b"late")]).then(|chunk| async move {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    Ok::<_, std::io::Error>(chunk)
+                });
+            Body::from_stream(chunks)
+        }
+
+        let app =
+            Router::new()
+                .route("/slow", post(slow_body))
+                .layer(middleware::from_fn_with_state(
+                    Limits {
+                        request: Duration::from_millis(50),
+                    },
+                    limit_request_time,
+                ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/slow")
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await
+            .expect("the router answers");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let error = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .expect_err("a stalled body must not be served as a complete response");
+        assert!(
+            error.to_string().contains("request_timeout_seconds"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_standalone_event_stream_is_not_cut_off() {
+        use axum::routing::get;
+        use tower::ServiceExt as _;
+
+        async fn slow_stream() -> Body {
+            let chunks =
+                tokio_stream::iter(vec![Bytes::from_static(b"event")]).then(|chunk| async move {
+                    tokio::time::sleep(Duration::from_millis(120)).await;
+                    Ok::<_, std::io::Error>(chunk)
+                });
+            Body::from_stream(chunks)
+        }
+
+        let app =
+            Router::new()
+                .route("/events", get(slow_stream))
+                .layer(middleware::from_fn_with_state(
+                    Limits {
+                        request: Duration::from_millis(20),
+                    },
+                    limit_request_time,
+                ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/events")
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await
+            .expect("the router answers");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .expect("the event stream must outlive the request deadline");
+        assert_eq!(body.as_ref(), b"event");
     }
 
     #[test]

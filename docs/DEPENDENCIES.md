@@ -121,6 +121,18 @@ is the one that forwards the original headers untouched. The bearer check is an
 `axum::middleware::from_fn_with_state` layer in front of the service, so an
 unauthenticated request never reaches MCP parsing.
 
+Two settings are enforced here rather than merely parsed.
+`http.session_expiry_seconds` becomes `LocalSessionManager::default()`'s public
+`session_config.keep_alive` (the SDK's idle-session timer, 5 minutes by default),
+which is why the transport constructs the manager instead of passing a bare
+`default()`. `http.request_timeout_seconds` becomes a deadline middleware over
+the response body as well as the handler: rmcp returns an SSE response as soon as
+streaming starts, so a handler-only timeout would never fire for a stalled tool
+call. `tokio-stream 0.1.19` (already in the graph through rmcp, `time` feature on
+by default) supplies `StreamExt::timeout` for that body, and `tower 0.5.3`
+(`util`) is a dev-dependency only, for `ServiceExt::oneshot` in the middleware
+tests.
+
 **No HTTP client dependency was added for the tests.** `tests/protocol/http_client.rs`
 is a ~130-line blocking `TcpStream` client that can set `Host`, `Origin` and
 `Authorization` explicitly, which is exactly what the transport tests must
@@ -145,6 +157,7 @@ control; a general client would hide those headers behind an API.
 | `serde_json` | 1.0.154 | Tool result serialization and protocol-frame parsing in tests |
 | `schemars` | 1.2.3 | JSON Schema derivation for tool argument types (same version rmcp re-exports) |
 | `axum` | 0.8.9 | HTTP listener, router and middleware for the Streamable HTTP transport (`http1` + `tokio` only) |
+| `tokio-stream` | 0.1.19 | `StreamExt::timeout` for the response-body deadline |
 
 `secrecy` 0.10 exposes `pub type SecretString = SecretBox<str>` and the
 `ExposeSecret` trait, which this crate uses so a token cannot be `Debug`-printed
