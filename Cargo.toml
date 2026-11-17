@@ -25,8 +25,10 @@ rmcp = { version = "=3.11.0", features = [
     "transport-streamable-http-server",
 ] }
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+schemars = "=1.2.3"
 secrecy = "=0.10.3"
 serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
 thiserror = "=2.0.21"
 tokio = { version = "=1.54.1", features = [
     "rt-multi-thread",

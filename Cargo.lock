@@ -248,6 +248,7 @@ dependencies = [
  "async-trait",
  "rmcp",
  "rustls",
+ "schemars",
  "secrecy",
  "serde",
  "serde_json",

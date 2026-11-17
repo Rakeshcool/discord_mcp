@@ -5,10 +5,12 @@
 //! ripple into the MCP layer, and the fields exposed here are deliberately a
 //! subset: only what a tool result needs.
 
+use serde::Serialize;
+
 use crate::discord::ids::{ChannelId, GuildId, MessageId, UserId};
 
 /// One guild the bot is a member of.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GuildSummary {
     /// Guild ID.
     pub id: GuildId,
@@ -21,7 +23,7 @@ pub struct GuildSummary {
 }
 
 /// Guild metadata.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GuildDetail {
     /// Guild ID.
     pub id: GuildId,
@@ -60,6 +62,12 @@ pub enum ChannelKind {
     Other(u8),
 }
 
+impl Serialize for ChannelKind {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
 impl ChannelKind {
     /// Map Discord's numeric channel type.
     pub const fn from_code(code: u8) -> Self {
@@ -93,7 +101,7 @@ impl ChannelKind {
 }
 
 /// Channel metadata.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChannelSummary {
     /// Channel ID.
     pub id: ChannelId,
@@ -114,7 +122,7 @@ pub struct ChannelSummary {
 }
 
 /// Who wrote a message.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MessageAuthor {
     /// Author's user ID.
     pub id: UserId,
@@ -125,7 +133,7 @@ pub struct MessageAuthor {
 }
 
 /// One message.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MessageSummary {
     /// Message ID.
     pub id: MessageId,
@@ -149,7 +157,7 @@ pub struct MessageSummary {
 }
 
 /// One guild member.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MemberSummary {
     /// Member's user ID.
     pub user_id: UserId,
@@ -164,7 +172,7 @@ pub struct MemberSummary {
 }
 
 /// One bounded page of results.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Page<T> {
     /// The items in this page, in the order Discord returned them.
     pub items: Vec<T>,

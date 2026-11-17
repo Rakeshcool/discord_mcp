@@ -53,6 +53,14 @@ macro_rules! snowflake_type {
             }
         }
 
+        /// Serialized as Discord's decimal string, so a 19-digit id survives any
+        /// JSON consumer that would lose precision on a bare number.
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.collect_str(&self.0)
+            }
+        }
+
         impl fmt::Display for $name {
             fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(formatter, "{}", self.0)
