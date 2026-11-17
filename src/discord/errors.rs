@@ -15,6 +15,21 @@ use crate::error::{AppError, ErrorCategory};
 /// Longest Discord error text copied into a message.
 const MAX_DETAIL_CHARS: usize = 200;
 
+/// Text for a response whose body could not be read as the expected model.
+const UNPARSABLE_RESPONSE: &str = "Discord returned a response that could not be parsed";
+
+/// The error for a response whose body could not be read.
+///
+/// Shares its wording with [`ErrorType::Parsing`], because a caller cannot act
+/// differently on "that JSON was not the shape I expected" depending on which
+/// layer noticed.
+pub fn read_body_error(operation: &str) -> AppError {
+    AppError::new(
+        ErrorCategory::Network,
+        format!("{operation} failed: {UNPARSABLE_RESPONSE}"),
+    )
+}
+
 /// Translate a twilight error into a category and safe message.
 pub fn map_discord_error(operation: &str, error: &twilight_http::Error) -> AppError {
     let (category, detail) = classify(error.kind());
@@ -45,7 +60,7 @@ fn classify(kind: &ErrorType) -> (ErrorCategory, Option<String>) {
         }
         ErrorType::Parsing { .. } => (
             ErrorCategory::Network,
-            Some("Discord returned a response that could not be parsed".to_string()),
+            Some(UNPARSABLE_RESPONSE.to_string()),
         ),
         ErrorType::RequestError => (
             ErrorCategory::Network,
