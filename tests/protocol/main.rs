@@ -3,9 +3,11 @@
 //! These run the real binary. The contract under test: in every mode, stdout
 //! carries MCP frames and nothing else, and startup fails closed.
 
+mod http_client;
+
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -30,7 +32,12 @@ fn run(args: &[&str], stdin_data: Option<&str>, token: Option<&str>) -> Outcome 
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     // The harness environment must not decide the outcome of these tests.
-    for variable in ["DISCORD_BOT_TOKEN", "DISCORD_MCP_CONFIG", "RUST_LOG"] {
+    for variable in [
+        "DISCORD_BOT_TOKEN",
+        "DISCORD_MCP_HTTP_TOKEN",
+        "DISCORD_MCP_CONFIG",
+        "RUST_LOG",
+    ] {
         command.env_remove(variable);
     }
     if let Some(token) = token {
@@ -401,4 +408,207 @@ fn a_disabled_read_blocks_the_guilds_resource() {
         .as_str()
         .unwrap_or_else(|| panic!("no error message in {response}"));
     assert!(message.contains("POLICY_BLOCKED"), "got {message:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Streamable HTTP transport
+// ---------------------------------------------------------------------------
+
+const HTTP_TOKEN: &str = "http-test-token-0123456789abcdef";
+
+const INITIALIZE_REQUEST: &str = concat!(
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{",
+    "\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},",
+    "\"clientInfo\":{\"name\":\"http-test\",\"version\":\"0.1.0\"}}}"
+);
+
+/// A running HTTP server, killed when the test ends.
+struct HttpServer {
+    child: Child,
+    address: String,
+    config_path: PathBuf,
+}
+
+impl Drop for HttpServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        std::fs::remove_file(&self.config_path).ok();
+    }
+}
+
+fn free_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+    let port = listener.local_addr().expect("local address").port();
+    drop(listener);
+    port
+}
+
+/// Start `serve` with the HTTP transport and wait until it accepts connections.
+fn start_http_server(name: &str, extra_config: &str) -> HttpServer {
+    let port = free_port();
+    let config = format!(
+        "[server]\ntransport = \"http\"\n[http]\nhost = \"127.0.0.1\"\nport = {port}\nrequire_auth = true\nauth_token_env = \"DISCORD_MCP_HTTP_TOKEN\"\n{extra_config}"
+    );
+    let config_path = temp_config(name, &config);
+
+    let mut command = Command::new(BIN);
+    command
+        .args(["serve", "--config", &config_path.display().to_string()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for variable in ["DISCORD_MCP_CONFIG", "RUST_LOG"] {
+        command.env_remove(variable);
+    }
+    command
+        .env("DISCORD_BOT_TOKEN", TOKEN)
+        .env("DISCORD_MCP_HTTP_TOKEN", HTTP_TOKEN);
+
+    let child = command.spawn().expect("start the HTTP server");
+    let address = format!("127.0.0.1:{port}");
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while std::net::TcpStream::connect(&address).is_err() {
+        assert!(
+            Instant::now() < deadline,
+            "the HTTP server never listened on {address}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    HttpServer {
+        child,
+        address,
+        config_path,
+    }
+}
+
+fn authorization() -> String {
+    format!("Bearer {HTTP_TOKEN}")
+}
+
+#[test]
+fn an_unauthenticated_http_request_is_refused() {
+    let server = start_http_server("http-no-auth", "");
+
+    let response = http_client::post(&server.address, "/mcp", &[], INITIALIZE_REQUEST);
+
+    assert_eq!(response.status, 401, "body: {}", response.body);
+    assert!(
+        response
+            .header("www-authenticate")
+            .unwrap_or_default()
+            .contains("Bearer"),
+        "a client must learn which scheme to use"
+    );
+    assert!(
+        !response.body.contains("serverInfo"),
+        "an unauthenticated request must not be served: {}",
+        response.body
+    );
+}
+
+#[test]
+fn a_wrong_http_bearer_token_is_refused() {
+    let server = start_http_server("http-wrong-token", "");
+
+    let response = http_client::post(
+        &server.address,
+        "/mcp",
+        &[("Authorization", "Bearer not-the-token-0123456789")],
+        INITIALIZE_REQUEST,
+    );
+
+    assert_eq!(response.status, 401, "body: {}", response.body);
+}
+
+#[test]
+fn a_foreign_host_header_is_refused() {
+    let server = start_http_server("http-bad-host", "");
+
+    let response = http_client::post(
+        &server.address,
+        "/mcp",
+        &[
+            ("Host", "rebind.example:1234"),
+            ("Authorization", &authorization()),
+        ],
+        INITIALIZE_REQUEST,
+    );
+
+    assert_eq!(response.status, 403, "body: {}", response.body);
+}
+
+#[test]
+fn a_foreign_origin_header_is_refused() {
+    let server = start_http_server("http-bad-origin", "");
+
+    let response = http_client::post(
+        &server.address,
+        "/mcp",
+        &[
+            ("Origin", "https://evil.example"),
+            ("Authorization", &authorization()),
+        ],
+        INITIALIZE_REQUEST,
+    );
+
+    assert_eq!(response.status, 403, "body: {}", response.body);
+}
+
+#[test]
+fn an_authenticated_initialize_is_served() {
+    let server = start_http_server("http-authenticated", "");
+
+    let response = http_client::post(
+        &server.address,
+        "/mcp",
+        &[("Authorization", &authorization())],
+        INITIALIZE_REQUEST,
+    );
+
+    assert_eq!(response.status, 200, "body: {}", response.body);
+
+    // The transport frames an initialize response as an SSE event, so the
+    // JSON-RPC message is the `data:` payload.
+    let payloads = http_client::event_data(&response.body);
+    let payload = payloads
+        .last()
+        .unwrap_or_else(|| panic!("no SSE payload in {:?}", response.body));
+    let value: Value = serde_json::from_str(payload)
+        .unwrap_or_else(|error| panic!("payload is not JSON ({error}): {payload:?}"));
+
+    assert_eq!(value["id"], 1, "payload: {payload}");
+    assert_eq!(
+        value["result"]["serverInfo"]["name"], "discord-mcp",
+        "payload: {payload}"
+    );
+}
+
+#[test]
+fn a_non_loopback_bind_without_its_bearer_token_fails_closed() {
+    let path = temp_config(
+        "http-non-loopback-without-token",
+        concat!(
+            "[server]\ntransport = \"http\"\n",
+            "[http]\nhost = \"0.0.0.0\"\nallow_non_loopback = true\n",
+            "require_auth = true\nallowed_origins = [\"https://example.com\"]\n",
+        ),
+    );
+    let outcome = run(
+        &["serve", "--config", &path.display().to_string()],
+        None,
+        Some(TOKEN),
+    );
+    std::fs::remove_file(&path).ok();
+
+    assert!(!outcome.timed_out, "the process did not exit");
+    assert_eq!(outcome.exit_code, Some(2), "stderr: {}", outcome.stderr);
+    assert!(outcome.stdout.is_empty(), "stdout must stay clean");
+    assert!(
+        outcome.stderr.contains("DISCORD_MCP_HTTP_TOKEN"),
+        "stderr: {}",
+        outcome.stderr
+    );
 }

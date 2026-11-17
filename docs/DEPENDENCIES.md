@@ -34,9 +34,15 @@ Verified from `~/.cargo/registry/src/*/rmcp-3.11.0`.
 - `StreamableHttpService::new(service_factory, Arc<M: SessionManager>, config)`
   returns a Tower service that can be mounted on a router. `StreamableHttpServerConfig`
   carries `allowed_hosts` (loopback-only by default), `allowed_origins` (empty by
-  default means **validation disabled**, so it must be set explicitly),
-  `max_request_bytes`, `sse_keep_alive`, `sse_retry`, `legacy_session_mode`,
+  default means **validation disabled** unless `enforce_origin_validation()` is
+  called), `max_request_body_bytes` (a public `usize`, 4 MiB by default;
+  `validate_empty_origin_allowlist` next to it is private and can only be set
+  through the builder), `sse_keep_alive`, `sse_retry`, `legacy_session_mode`,
   `json_response`, a cancellation token and an optional external session store.
+  A disallowed `Host` or `Origin` is answered `403`; a malformed one `400`.
+  `StreamableHttpService::new` requires the session manager as
+  `Arc<M: SessionManager>`, which is why the transport passes
+  `Arc::new(LocalSessionManager::default())`.
 - Session semantics: per SEP-2567 the `2026-07-28` protocol version removes
   sessions, so clients negotiating it are served statelessly regardless of
   `legacy_session_mode`. Older clients can still get session-id behaviour. This
@@ -101,11 +107,24 @@ would panic. The adapter installs `ring`'s provider exactly once
 version already in the lock file with that provider enabled. `ring` is chosen over
 `aws-lc-rs` because it builds on Windows MSVC without CMake or NASM.
 
-### HTTP serving (Phase 5)
+### HTTP serving — `axum =0.8.9` (Phase 6)
 
-`rmcp`'s `server-side-http` feature brings its own HTTP stack for the Tower
-service. We will not pin `axum`/`tower` independently in advance; the pin will
-match the version rmcp exposes, and it will be recorded here when Phase 5 lands.
+`rmcp`'s `server-side-http` feature provides the MCP logic as a `tower` service
+(`Service<http::Request<B>>`, `Error = Infallible`); it does not provide a server.
+`axum` 0.8.9 supplies the listener, router and middleware, with
+`default-features = false, features = ["tokio", "http1"]` — HTTP/2, form, query and
+JSON helpers are not needed here, and `http1` is all the endpoint serves.
+
+The service is mounted with `Router::nest_service("/mcp", ..)` rather than
+`Router::nest`, because the MCP service validates `Host` and the nesting variant
+is the one that forwards the original headers untouched. The bearer check is an
+`axum::middleware::from_fn_with_state` layer in front of the service, so an
+unauthenticated request never reaches MCP parsing.
+
+**No HTTP client dependency was added for the tests.** `tests/protocol/http_client.rs`
+is a ~130-line blocking `TcpStream` client that can set `Host`, `Origin` and
+`Authorization` explicitly, which is exactly what the transport tests must
+control; a general client would hide those headers behind an API.
 
 ## Pinned crate set
 
@@ -125,6 +144,7 @@ match the version rmcp exposes, and it will be recorded here when Phase 5 lands.
 | `rustls` | 0.23.46 | TLS, `ring` provider selected at startup; no default features |
 | `serde_json` | 1.0.154 | Tool result serialization and protocol-frame parsing in tests |
 | `schemars` | 1.2.3 | JSON Schema derivation for tool argument types (same version rmcp re-exports) |
+| `axum` | 0.8.9 | HTTP listener, router and middleware for the Streamable HTTP transport (`http1` + `tokio` only) |
 
 `secrecy` 0.10 exposes `pub type SecretString = SecretBox<str>` and the
 `ExposeSecret` trait, which this crate uses so a token cannot be `Debug`-printed
