@@ -1,0 +1,62 @@
+[package]
+name = "discord-mcp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Secure Model Context Protocol server for Discord using an official bot identity"
+license = "MIT OR Apache-2.0"
+publish = false
+readme = "README.md"
+
+[lib]
+name = "discord_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "discord-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# MCP SDK. `server` (a default feature) already pulls in `schemars` and
+# `transport-async-rw`; the two transports below are added explicitly.
+rmcp = { version = "=3.11.0", features = [
+    "transport-io",
+    "transport-streamable-http-server",
+] }
+secrecy = "=0.10.3"
+serde = { version = "=1.0.229", features = ["derive"] }
+thiserror = "=2.0.21"
+tokio = { version = "=1.54.1", features = [
+    "rt-multi-thread",
+    "macros",
+    "signal",
+    "io-std",
+    "io-util",
+    "time",
+    "net",
+] }
+toml = "=1.2.1"
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+serde_json = "=1.0.154"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+# stdout is reserved for MCP protocol frames in every mode; CLI diagnostics go
+# to stderr. This makes a stray `println!` a build failure instead of a
+# protocol corruption bug.
+print_stdout = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
