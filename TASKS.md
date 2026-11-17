@@ -54,18 +54,24 @@ behaviour rests on the documented API contract rather than an observed call.
 
 ## Phase 3 — Security and policy engine
 
-- [ ] Add read-enabled and write-enabled flags.
-- [ ] Add guild allowlist.
-- [ ] Add channel allowlist.
-- [ ] Add tool risk classification.
-- [ ] Add message length and page-size limits.
-- [ ] Add mention sanitization/default-deny behavior.
-- [ ] Add concurrency limits.
-- [ ] Add destructive-action approval abstraction.
-- [ ] Fail closed if approval is unavailable.
-- [ ] Add policy unit tests and audit event model.
+- [x] Add read-enabled and write-enabled flags.
+- [x] Add guild allowlist.
+- [x] Add channel allowlist.
+- [x] Add tool risk classification.
+- [x] Add message length and page-size limits.
+- [x] Add mention sanitization/default-deny behavior.
+- [x] Add concurrency limits.
+- [x] Add destructive-action approval abstraction.
+- [x] Fail closed if approval is unavailable.
+- [x] Add policy unit tests and audit event model.
 
 **Exit criteria:** All policy rules are tested independently of MCP and Discord transport.
+
+Met at the gate boundary: 35 unit tests drive the policy rules and the enforcing
+decorator against a recording fake `DiscordApi`, where "denied" means the fake was
+never called. Policy is enforced in `AppService::bootstrap`, so the handle stored
+in `AppState` is the gate, never the raw client. No destructive tool exists, so the
+approval path is proven against fake approval sources rather than a real one.
 
 ## Phase 4 — MCP tools and resources
 

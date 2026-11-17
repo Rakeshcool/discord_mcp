@@ -12,6 +12,9 @@ use crate::config::{Config, TransportMode};
 use crate::discord::adapter::TwilightDiscord;
 use crate::error::AppError;
 use crate::observability::logging;
+use crate::policy::audit::LoggingAudit;
+use crate::policy::gate::PolicyGate;
+use crate::policy::rules::Policy;
 use crate::security::secrets::BotToken;
 
 /// Outcome of a configuration-only check, safe to print: no secret values.
@@ -34,7 +37,11 @@ impl AppService {
     /// logging, then hand the transport a complete state.
     pub fn bootstrap(config: Config) -> Result<Self, AppError> {
         let token = BotToken::from_env(&config.discord.token_env)?;
+        let policy = Policy::from_config(&config.policy)?;
         let discord = TwilightDiscord::new(&config.discord, &token)?;
+        // Every Discord request goes through the gate: the raw client is not
+        // stored anywhere a tool can reach it.
+        let discord = PolicyGate::new(Arc::new(discord), policy, Arc::new(LoggingAudit));
         let state = Arc::new(AppState::new(config, token, Arc::new(discord)));
         logging::init(&state.config().logging)?;
         tracing::info!(
