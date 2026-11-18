@@ -59,6 +59,7 @@ enum Call {
     DeleteRole(u64, u64),
     AssignRole(u64, u64, u64),
     RemoveRole(u64, u64, u64),
+    BotHighestRole(u64),
     BotIdentity,
 }
 
@@ -68,6 +69,7 @@ struct FakeDiscord {
     channel_guilds: Mutex<HashMap<u64, Option<u64>>>,
     parents: Mutex<HashMap<u64, u64>>,
     invite_channels: Mutex<HashMap<String, u64>>,
+    bot_roles: Mutex<HashMap<u64, u64>>,
     hold: Mutex<Option<Arc<Semaphore>>>,
     failure: Mutex<Option<AppError>>,
     guilds: Vec<GuildSummary>,
@@ -80,6 +82,7 @@ impl FakeDiscord {
             channel_guilds: Mutex::new(HashMap::new()),
             parents: Mutex::new(HashMap::new()),
             invite_channels: Mutex::new(HashMap::new()),
+            bot_roles: Mutex::new(HashMap::new()),
             hold: Mutex::new(None),
             failure: Mutex::new(None),
             guilds: Vec::new(),
@@ -103,6 +106,14 @@ impl FakeDiscord {
             .lock()
             .expect("parent map")
             .insert(channel, parent);
+        self
+    }
+
+    fn with_bot_role(self, guild: u64, role: u64) -> Self {
+        self.bot_roles
+            .lock()
+            .expect("bot role map")
+            .insert(guild, role);
         self
     }
 
@@ -603,6 +614,17 @@ impl DiscordApi for FakeDiscord {
         ))
         .await?;
         Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn bot_highest_role(&self, guild_id: &GuildId) -> Result<Option<RoleId>, AppError> {
+        self.record(Call::BotHighestRole(guild_id.get())).await?;
+        Ok(self
+            .bot_roles
+            .lock()
+            .expect("bot role map")
+            .get(&guild_id.get())
+            .copied()
+            .map(RoleId::from_u64))
     }
 
     async fn get_invite(&self, code: &str) -> Result<InviteSummary, AppError> {
@@ -1969,6 +1991,110 @@ async fn role_changes_share_the_action_budget() {
         "got {error}"
     );
     assert_eq!(fake.calls(), vec![Call::CreateRole(1)]);
+}
+
+#[tokio::test]
+async fn editing_the_bots_highest_role_is_refused() {
+    let fake = Arc::new(FakeDiscord::new().with_bot_role(1, 7));
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(administration_config()),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    let error = gated
+        .edit_role(
+            &guild(1),
+            &RoleId::from_u64(7),
+            &RoleEdit {
+                name: Some("renamed".to_string()),
+                ..RoleEdit::default()
+            },
+            false,
+        )
+        .await
+        .expect_err("the bot's own highest role is protected");
+
+    assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+    assert!(error.message().contains("highest role"), "got {error}");
+    assert_eq!(
+        fake.calls(),
+        vec![Call::BotHighestRole(1)],
+        "the edit must not be sent"
+    );
+}
+
+#[tokio::test]
+async fn deleting_the_bots_highest_role_is_refused() {
+    let fake = Arc::new(FakeDiscord::new().with_bot_role(1, 7));
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(administration_config()),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    let error = gated
+        .delete_role(&guild(1), &RoleId::from_u64(7), false)
+        .await
+        .expect_err("the bot's own highest role is protected");
+
+    assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+    assert_eq!(fake.calls(), vec![Call::BotHighestRole(1)]);
+}
+
+#[tokio::test]
+async fn editing_another_role_still_reaches_discord() {
+    let fake = Arc::new(FakeDiscord::new().with_bot_role(1, 7));
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(administration_config()),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    let outcome = gated
+        .edit_role(
+            &guild(1),
+            &RoleId::from_u64(8),
+            &RoleEdit {
+                name: Some("renamed".to_string()),
+                ..RoleEdit::default()
+            },
+            false,
+        )
+        .await
+        .expect("only the bot's own role is protected");
+
+    assert_eq!(
+        outcome,
+        MutationOutcome::Applied(role_summary(8)),
+        "a different role is edited"
+    );
+    assert_eq!(
+        fake.calls(),
+        vec![Call::BotHighestRole(1), Call::EditRole(1, 8)]
+    );
+}
+
+#[tokio::test]
+async fn a_role_dry_run_skips_the_bot_role_guard() {
+    let fake = Arc::new(FakeDiscord::new().with_bot_role(1, 7));
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(administration_config()),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    let outcome = gated
+        .delete_role(&guild(1), &RoleId::from_u64(7), true)
+        .await
+        .expect("a dry run reports the local decision");
+
+    assert_eq!(outcome, MutationOutcome::Planned);
+    assert!(
+        fake.calls().is_empty(),
+        "a dry run must not read the bot's roles: {:?}",
+        fake.calls()
+    );
 }
 
 fn snowflake_at(millis: u64) -> MessageId {

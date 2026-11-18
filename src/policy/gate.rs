@@ -820,10 +820,16 @@ impl DiscordApi for PolicyGate {
         spec: &RoleEdit,
         dry_run: bool,
     ) -> Result<MutationOutcome<RoleSummary>, AppError> {
-        self.guild_mutation("discord_edit_role", guild_id, dry_run, async move {
-            let outcome = self.inner.edit_role(guild_id, role_id, spec, false).await?;
-            applied(outcome)
-        })
+        self.role_mutation(
+            "discord_edit_role",
+            guild_id,
+            role_id,
+            dry_run,
+            async move {
+                let outcome = self.inner.edit_role(guild_id, role_id, spec, false).await?;
+                applied(outcome)
+            },
+        )
         .await
     }
 
@@ -833,10 +839,16 @@ impl DiscordApi for PolicyGate {
         role_id: &RoleId,
         dry_run: bool,
     ) -> Result<MutationOutcome<()>, AppError> {
-        self.guild_mutation("discord_delete_role", guild_id, dry_run, async move {
-            let outcome = self.inner.delete_role(guild_id, role_id, false).await?;
-            applied(outcome)
-        })
+        self.role_mutation(
+            "discord_delete_role",
+            guild_id,
+            role_id,
+            dry_run,
+            async move {
+                let outcome = self.inner.delete_role(guild_id, role_id, false).await?;
+                applied(outcome)
+            },
+        )
         .await
     }
 
@@ -873,6 +885,22 @@ impl DiscordApi for PolicyGate {
         })
         .await
     }
+
+    /// The gate's own bot-role read: no tool exposes it, but `DiscordApi` does,
+    /// so it honours read policy and guild scope and is audited.
+    async fn bot_highest_role(&self, guild_id: &GuildId) -> Result<Option<RoleId>, AppError> {
+        self.run(
+            "discord_resolve_bot_role",
+            AuditTarget::for_guild(*guild_id),
+            async {
+                self.policy.check_read_enabled()?;
+                self.policy.check_guild(guild_id)?;
+                let _permit = self.permit().await?;
+                self.inner.bot_highest_role(guild_id).await
+            },
+        )
+        .await
+    }
 }
 
 impl PolicyGate {
@@ -898,6 +926,56 @@ impl PolicyGate {
             body.await
         })
         .await
+    }
+
+    /// Role edits and deletions additionally refuse the bot's own highest role.
+    ///
+    /// Changing or removing that role can strip the bot's permissions, so the
+    /// guard is unconditional rather than a setting that a deployment could
+    /// turn off and then lock itself out with. The lookup needs requests, so it
+    /// runs for a real attempt only; a dry run reports the local decision, as
+    /// other remote-scope checks do.
+    async fn role_mutation<T>(
+        &self,
+        action: &'static str,
+        guild_id: &GuildId,
+        role_id: &RoleId,
+        dry_run: bool,
+        body: impl Future<Output = Result<T, AppError>>,
+    ) -> Result<MutationOutcome<T>, AppError> {
+        let target = AuditTarget::for_guild(*guild_id);
+        self.policy
+            .check_tool(action)
+            .inspect_err(|error| self.record_refusal(action, target, error))?;
+        self.policy
+            .check_guild(guild_id)
+            .inspect_err(|error| self.record_refusal(action, target, error))?;
+        if !dry_run && !self.policy.requires_dry_run(action) {
+            self.authorize_role_target(guild_id, role_id)
+                .await
+                .inspect_err(|error| self.record_refusal(action, target, error))?;
+        }
+
+        self.run_mutation(action, target, dry_run, async {
+            let _permit = self.permit().await?;
+            body.await
+        })
+        .await
+    }
+
+    /// Refuse an edit or deletion aimed at the bot's own highest role.
+    async fn authorize_role_target(
+        &self,
+        guild_id: &GuildId,
+        role_id: &RoleId,
+    ) -> Result<(), AppError> {
+        let _permit = self.permit().await?;
+        if self.inner.bot_highest_role(guild_id).await? == Some(*role_id) {
+            return Err(AppError::policy_blocked(format!(
+                "role {role_id} is the bot's own highest role in guild {guild_id}; editing or deleting it would remove the bot's access"
+            )));
+        }
+        Ok(())
     }
 
     /// Resolve a thread's scope through its parent channel.
