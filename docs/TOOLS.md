@@ -3,8 +3,9 @@
 Every tool this build exposes, with its arguments, its result shape, the policy
 that applies to it and the errors it can return.
 
-This build has **nine read tools, one send tool and eight message mutations**,
-plus one resource. Tools are registered unconditionally, so a call that policy
+This build has **nine read tools and twenty-three mutations** — seven message
+writes, ten structure/control tools and six administrative tools — plus one
+resource. Tools are registered unconditionally, so a call that policy
 refuses comes back as a `POLICY_BLOCKED` result rather than a tool that vanishes
 from `tools/list`.
 
@@ -30,14 +31,17 @@ covers the threat model.
   message is written by this server, never copied from Discord, and never contains
   a token or a message body.
 - Annotations say what a tool does to the world. Read tools carry
-  `readOnlyHint: true`. Mutations carry `readOnlyHint: false` and
-  `openWorldHint: true`; `discord_delete_message` and
-  `discord_bulk_delete_messages` also carry `destructiveHint: true`. Only
-  `discord_send_message` is `idempotentHint: false`, because sending twice creates
-  two messages.
-- Mutations accept `dry_run`. A dry run runs every argument and policy check, then
-  returns `{"dry_run":true,"action":"…"}` without sending anything and without
-  consuming the action budget.
+  `readOnlyHint: true`. Every mutation carries `readOnlyHint: false` and
+  `openWorldHint: true`; 17 of them also carry `destructiveHint: true` — the two
+  message deletions, `discord_clear_reactions`, every structure tool and every
+  role tool. `idempotentHint` is `false` where a repeat is not a no-op:
+  `discord_send_message`, `discord_create_channel`, `discord_delete_channel`,
+  `discord_create_thread`, `discord_create_invite`, `discord_create_role` and
+  `discord_delete_role`.
+- Every mutation except `discord_send_message` accepts `dry_run`. A dry run runs
+  every argument and local policy check, then returns
+  `{"dry_run":true,"action":"…"}` without sending anything, without consuming
+  the action budget and without writing an audit record.
 
 ### Policy in front of every tool
 
@@ -452,9 +456,10 @@ is not, and a client should branch on the code.
   `discord.request_timeout_seconds`, so a long limit surfaces as `TIMEOUT`.
 - **Writes** are never retried after an ambiguous outcome (see above).
 - **Mutations share one budget.** `policy.autonomy.max_actions_per_minute`
-  (default 30) counts applied mutations in a rolling minute across every tool; the
-  action past the budget is `POLICY_BLOCKED` and no request is made. Dry runs do
-  not consume it.
+  (default 30) is a rolling 60-second window shared by the 22 mutations that
+  accept `dry_run`; the action past the budget is `POLICY_BLOCKED` and no request
+  is made. Dry runs do not consume it. `discord_send_message` is audited but not
+  counted against the budget, because it has no dry-run form.
 - Each attempt, including a rate-limit wait inside it, is bounded by
   `discord.request_timeout_seconds` (default 20). Over HTTP the whole request is
   additionally bounded by `http.request_timeout_seconds` (default 30), and a

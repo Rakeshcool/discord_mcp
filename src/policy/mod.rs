@@ -11,8 +11,9 @@
 //! - [`approval`] — the fail-closed approval abstraction for destructive actions.
 //! - [`audit`] — content-free records of what policy decided.
 //!
-//! Writes stay disabled by default and destructive tools do not exist, so no
-//! code path here can delete or alter Discord data.
+//! Every mutation class is disabled by default. When an operator enables one,
+//! the gate applies its flag, allowlist, budget and audit path before a request
+//! is built, and a dry run stops before all of them.
 
 pub mod approval;
 pub mod audit;

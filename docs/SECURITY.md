@@ -24,9 +24,10 @@ build an `Authorization` header.
 
 | Asset | Why it matters |
 |---|---|
-| Bot token | Full control of the bot: sends messages, reads allowlisted channels |
+| Bot token | Full control of the bot: sends, edits and deletes messages, restructures channels and roles, reads allowlisted channels |
 | Discord message content | Private user-generated content, potentially sensitive |
 | Guild/channel structure and member lists | Membership and social-graph data |
+| Invite codes | A live invite is a credential for joining the guild |
 | Local configuration | Allowlists and limits, i.e. the effective authority boundary |
 | Host CPU/network | An unauthenticated HTTP endpoint is a local attack surface |
 
@@ -68,13 +69,25 @@ session, and no database — the process holds nothing beyond the current call.
   authentication, missing `allowed_origins` for non-loopback binding, plaintext
   Discord API base URLs, a non-`v10` API version and non-snowflake allowlist
   entries are all startup errors.
-- **Writes off by default.** `policy.write_enabled = false`, and enabling it
-  requires a non-empty channel allowlist. Parsed `@everyone`/`@here`, role and
+- **Every mutation class is off by default.** `write_enabled` (send, edit,
+  reactions, pins) and `control_enabled` (message deletion, channels, overwrites,
+  threads, invites) each require a non-empty channel allowlist;
+  `administrative_enabled` (bulk delete, roles) requires a non-empty guild
+  allowlist. Validation refuses a class flag without its allowlist, so a
+  half-enabled deployment stops at startup. Parsed `@everyone`/`@here`, role and
   user mentions cannot be enabled at all (`allow_mass_mentions = true` is
   rejected).
-- **No destructive tools exist.** Delete and edit tools are not registered in
-  v1. There is no trustworthy MCP approval channel available, so the safe
-  implementation is the absent one.
+- **Destructive tools are class-gated, not absent.** Delete, channel, thread,
+  invite and overwrite tools are registered and run only when their class flag,
+  allowlist, budget and audit path all pass. The set stays bounded: no bans,
+  kicks, member or nickname management, webhooks, emoji management, guild
+  settings, automod or channel reordering.
+- **There is no approval prompt, and the server does not claim one.** MCP has no
+  confirmation primitive the process can trust, so `policy/approval.rs` is a
+  fail-closed abstraction that denies everything and is deliberately not wired
+  into the tool path. What bounds a destructive call is the class flag, the
+  allowlist, the rolling budget and the audit trail — not consent it did not
+  obtain.
 - **Policy is enforced, not advisory.** `PolicyGate` wraps the Discord client and
   `AppState` stores only the wrapped handle, so no tool can reach Discord without
   passing the allowlists, feature flags, page-size ceiling and concurrency cap.
@@ -106,24 +119,54 @@ session, and no database — the process holds nothing beyond the current call.
   `AuditEvent` (action, target IDs, outcome, category) through an injectable
   `AuditSink`; the shipping sink logs to stderr, denials at `info`. There is no
   field in which a message body or token could be recorded.
-- **One write tool, off by default.** `discord_send_message` is registered
-  unconditionally so a client can see the capability and why it is refused, and
-  the gate rejects it while `policy.write_enabled` is false. It cannot edit,
-  delete, react or bulk-delete. Argument schemas use `deny_unknown_fields`, so an
-  unknown argument is refused rather than ignored, and the read-only hint is
-  truthful per tool: `true` for the eight reads, `false` for the write.
-- **A write is four checks before any request.** Write flag, channel allowlist,
-  character limit and mention neutralisation are decided in policy from local
-  configuration; the content the adapter receives is the neutralised text, and
-  the request also carries an empty mention parse list. A policy refusal means
-  the adapter was never called, which the tests assert directly.
-- **Every write attempt leaves exactly one audit record.** `allowed`,
+- **Twenty-three mutations, all off by default.** The tools are registered
+  unconditionally so a client can see the capability and why it is refused; the
+  gate rejects each while its class flag is false. Argument schemas use
+  `deny_unknown_fields`, so an unknown argument is refused rather than ignored,
+  and the read-only hint is truthful per tool: `true` for the nine reads, `false`
+  for every mutation.
+- **An outgoing message is four checks before any request.** Write flag, channel
+  allowlist, character limit and mention neutralisation are decided in policy
+  from local configuration; the content the adapter receives is the neutralised
+  text, and the request also carries an empty mention parse list. The same
+  content rules run for an edit, so an edit cannot smuggle a mention or an
+  oversized body past policy. A policy refusal means the adapter was never
+  called, which the tests assert directly.
+- **Every real mutation attempt leaves exactly one audit record.** `allowed`,
   `denied` (policy refusal) or `failed` (Discord rejected an allowed attempt,
-  with its category) — action, channel and outcome, never the message body.
-- **A write is never retried.** A `POST` retried after a timeout, a reset or a
-  `5xx` may already have succeeded, so the adapter makes one attempt; a `429` is
-  safe to resend because Discord rejected that attempt, and twilight's limiter
-  handles it.
+  with its category) — action, target IDs, outcome and correlation id, never the
+  content. Reads record allowances and policy denials; a read that Discord
+  rejects is an error result without a separate audit record. A dry run records
+  nothing, because nothing was attempted.
+- **Mutations are budgeted.** `policy.autonomy.max_actions_per_minute` (default
+  30) is a rolling 60-second window shared by the 22 mutations that accept
+  `dry_run`; the action past it is `POLICY_BLOCKED` and no request is built.
+  `discord_send_message` is audited but not counted, because it has no dry-run
+  form. `policy.autonomy.require_dry_run` can additionally force named tools to
+  be planned before a real call.
+- **A dry run cannot touch Discord.** It runs every argument and local policy
+  check, then returns `{"dry_run":true,"action":"…"}` before the budget and
+  before any request. That is also its limit: a dry run cannot detect a missing
+  Discord permission or a role-hierarchy problem; the first real call is where
+  that `403` appears.
+- **The bot cannot lock itself out.** Editing or deleting the bot's own highest
+  role, or removing that role from the bot, is refused locally and
+  unconditionally; there is no setting that disables the guard. `@everyone` is
+  refused for delete, assign and remove. The guard costs no budget but does use
+  the concurrency cap, and it runs only for a real attempt because it needs
+  Discord lookups.
+- **Structure is scoped by resolution.** A new channel's parent must be an
+  allowed channel; a thread is checked through its parent channel; an invite is
+  resolved to its channel (and guild, under a guild allowlist) before the budget
+  is spent. A channel or thread created by a tool is not added to the allowlist,
+  so nothing may then modify it until an operator widens the list.
+- **Bulk delete is bounded before the request.** 2–
+  `policy.autonomy.max_bulk_delete` distinct IDs, none older than 14 days, all
+  computed from the snowflakes locally. Discord's own limits still apply.
+- **A mutation is never retried after an ambiguous outcome.** A `POST` retried
+  after a timeout, a reset or a `5xx` may already have applied, so the adapter
+  makes one attempt; a `429` is safe to resend because Discord rejected that
+  attempt, and twilight's limiter handles it.
 - **HTTP authenticates before it serves.** The Streamable HTTP transport resolves
   its bearer token from `http.auth_token_env` before binding, so a server that
   cannot authenticate its callers never opens a socket. The token is compared in
@@ -171,9 +214,12 @@ session, and no database — the process holds nothing beyond the current call.
 - Message bodies are fetched per call and dropped after the response is built.
 - Audit records contain the action, target IDs, outcome, error category and the
   correlation id of the tool call that produced them — never content, never
-  credentials. The id is what joins two Discord requests made for one call; the
-  timestamp comes from the log line. Nothing is persisted: there is no durable
-  audit store in this build.
+  credentials. Allowances log at `debug`, policy denials at `info`, failures of
+  allowed attempts at `warn`; the timestamp comes from the log line. Nothing is
+  persisted: there is no durable audit store in this build.
+- An invite code returned by `discord_create_invite`, and message text returned
+  by the read tools, are credentials/content leaving through a tool result. They
+  are not logged, but the client receives them and must treat them accordingly.
 - Configuration files hold no secrets. Only environment variable **names**
   appear in configuration and in `.env.example`.
 
@@ -207,6 +253,8 @@ session, and no database — the process holds nothing beyond the current call.
 | Control | Why |
 |---|---|
 | Draft/review prompts | optional in the specification; no draft or review workflow to attach them to |
+| Host-level approval prompt | MCP offers no confirmation primitive this process can trust; the shipped bound is class flag + allowlist + budget + audit, and the approval module denies rather than pretends |
+| Guild settings, automod, bans/kicks, member and nickname management, webhooks, emoji management | no tool exists for them in this build |
 
 Everything else in this document describes shipped behaviour.
 

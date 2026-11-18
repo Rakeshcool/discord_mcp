@@ -1,8 +1,9 @@
 # TASKS.md — Development plan
 
 Status legend: `[x]` done or closed · `CLOSED` = deliberately out of v1 scope or
-not verifiable here, with the reason inline. Every phase below is complete; the
-release gate is at the end.
+not verifiable here, with the reason inline. Phases 0–9 are complete, Phase 10 is
+the historical v0.1.0 gate, and Phase 11 is the branch gate, with its remaining
+live checks listed under it.
 
 ## Phase 0 — Discovery and technical decisions
 
@@ -67,7 +68,7 @@ release gate is at the end.
 
 - [x] MCP initialisation and capability negotiation.
 - [x] Tool registry with strict JSON schemas.
-- [x] Eight read tools: guilds, channels, messages, members.
+- [x] Nine read tools: guilds, channels, messages, members and `discord_get_capabilities`.
 - [x] Resource `discord://guilds`.
 - [x] Prompts *(CLOSED — optional in the specification; nothing here needs one)*.
 - [x] Schema and tool-contract tests.
@@ -110,8 +111,8 @@ release gate is at the end.
 - [x] Pre-flight permission read *(CLOSED — not needed: Discord's `403` is authoritative and already audited)*.
 - [x] One audit record per attempt: `allowed`, `denied` or `failed`.
 - [x] Tests for policy-denied, permission-denied, rate-limited and success.
-- [x] Edit / delete / react *(CLOSED — out of v1 scope; no destructive tool is registered)*.
-- [x] No bulk deletion or mass moderation in v1.
+- [x] Edit / delete / react shipped on `feat/server-control` (Phase 11), each behind its own class flag.
+- [x] Bulk deletion stays administrative-only and mass mentions stay off (Phase 11).
 
 **Exit criteria:** Writes are opt-in, bounded, audited, and safe against accidental mentions.
 
@@ -150,7 +151,8 @@ release gate is at the end.
 
 Signed off on 2026-11-18 against the release artifact built from the tag with
 `cargo build --release --locked --target x86_64-pc-windows-msvc` from an empty
-`target/`.
+`target/`. This gate covers the `v0.1.0` artifact only (151 tests at that tag);
+the branch is gated by Phase 11 instead.
 
 - [x] All 151 tests pass.
 - [x] `cargo fmt --all --check` passes.
@@ -166,3 +168,38 @@ Signed off on 2026-11-18 against the release artifact built from the tag with
 - [x] Documentation matches shipped behaviour.
 
 **Release decision:** Do not ship if any security or protocol acceptance criterion is unmet.
+
+## Phase 11 — Server control (`feat/server-control`)
+
+Everything below is implemented and tested on the branch; this is its gate.
+
+- [x] `discord_get_capabilities`: enabled classes, autonomy limits and the authenticated bot.
+- [x] Seven message writes: `discord_send_message`, `discord_edit_message`, the three reaction tools, `discord_pin_message` and `discord_unpin_message`.
+- [x] Ten structure/control tools: `discord_delete_message`, channels (create/edit/delete), permission overwrites (set/delete), threads (create/edit) and invites (create/delete).
+- [x] Six administrative tools: `discord_bulk_delete_messages` and five role tools (create, edit, delete, assign, remove). `ADMINISTRATOR` cannot be granted, role names are 1–100 characters locally, and `@everyone` is refused for delete, assign and remove.
+- [x] Three mutation classes, each off by default and each requiring its own allowlist: `write_enabled` (channel), `control_enabled` (channel), `administrative_enabled` (guild).
+- [x] Shared rolling budget (`policy.autonomy.max_actions_per_minute`) across the 22 `dry_run`-capable mutations; `discord_send_message` is outside it because it has no dry-run form.
+- [x] `policy.autonomy.require_dry_run`: named tools refuse a real call; an unclassified name is a configuration error.
+- [x] `dry_run` on every mutation except `discord_send_message`: all local checks, no Discord request, no budget, no audit record.
+- [x] Exactly one content-free audit record per real mutation attempt (`allowed`, `denied`, `failed`); reads record allowances and policy denials.
+- [x] Unconditional guard against editing or deleting the bot's own highest role, or removing it from the bot; no setting disables it.
+- [x] Remote scope resolved before spending an action: a thread through its parent channel, an invite through its channel, roles through the hierarchy.
+- [x] Bulk delete: 2–`max_bulk_delete` distinct IDs, none older than 14 days, checked from the snowflake without a request.
+- [x] `--read-only` / `DISCORD_MCP_READ_ONLY=1` disables all three mutation classes for the session.
+- [x] Documentation updated against the code: `README.md`, `docs/TOOLS.md`, `docs/SETUP.md`, `docs/SECURITY.md`, `CHANGELOG.md`.
+- [x] All 223 tests pass (17 lib, 50 integration, 33 protocol, 123 unit).
+- [x] `cargo fmt --all --check` passes.
+- [x] `cargo clippy --all-targets --all-features -- -D warnings` passes.
+- [x] Live role-tool checks in the test guild: create/edit/delete/assign/remove, dry runs, `@everyone` refusals, `ADMINISTRATOR` refusal, and above-bot calls returning `403` / `50013`.
+- [x] All mutation classes remain off in the built-in configuration.
+
+### Outstanding on the branch
+
+- [ ] Live smoke for the message tools (edit, delete, bulk delete, reactions, pins).
+- [ ] Live smoke for the structure tools (channels, overwrites, threads, invites).
+- [ ] Live smoke for the HTTP transport against a branch build, including the refusal matrix.
+- [ ] Live budget exhaustion, a `require_dry_run` refusal and a `--read-only` session (unit-tested only so far).
+- [ ] A second bot/integration role to observe Discord's managed-role delete and permission-edit refusals.
+- [ ] Open the PR, run CI, review and merge.
+
+**Release decision:** Do not merge while any security or policy acceptance criterion is unmet.
