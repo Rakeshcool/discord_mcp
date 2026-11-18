@@ -13,7 +13,9 @@ for the full specification, `TASKS.md` for the phased plan, and
 
 ## Status
 
-Through Phase 5 — read-only Discord access over STDIO and Streamable HTTP.
+Through Phase 6 — read-only Discord access over STDIO and Streamable HTTP.
+Phases 7–10 (writes, operational hardening, packaging, release gate) are planned
+and not started.
 
 Implemented: typed configuration with fail-closed validation, stable error
 categories, secret wrapper, structural secret redaction, stderr-only logging,
@@ -23,12 +25,22 @@ read adapter with timeouts, bounded retries and error mapping; a policy engine
 neutralisation, fail-closed approval, content-free audit records) enforced in
 front of the client; eight read tools plus the `discord://guilds` resource; and a
 Streamable HTTP transport with loopback defaults, a bearer-token gate, `Host` and
-`Origin` validation, request-body caps and per-session isolation.
+`Origin` validation, request-body caps, a request deadline that also covers the
+response body, idle-session expiry and per-session isolation.
 
-Not implemented yet: write operations, destructive tools, TLS termination (put a
-reverse proxy in front of a non-loopback bind), a health endpoint, and an
-HTTP-level concurrency cap (Discord calls are already capped by
-`policy.max_concurrent_requests`).
+Not implemented yet:
+
+- **Writes (Phase 7).** No tool writes to Discord: no send, edit, delete or
+  reaction, and no destructive operation.
+- **HTTP gaps (Phase 6).** No health endpoint and no HTTP-level concurrency cap
+  (Discord calls are already capped by `policy.max_concurrent_requests`). Session
+  resumption, notification delivery and disconnect cleanup are unverified.
+- **Deployment (Phase 6).** TLS termination is not implemented and no
+  reverse-proxy guide exists; put a proxy that terminates TLS in front of a
+  non-loopback bind.
+- **Hardening (Phase 8).** No correlation IDs on tool executions, no graceful
+  drain of the HTTP listener (STDIO stops when the client closes stdin), and no
+  dependency-audit policy.
 
 ## Build and test
 
@@ -79,7 +91,7 @@ stdout carries MCP protocol frames only; every diagnostic goes to stderr. Exit
 codes: `0` success, `1` internal failure, `2` usage/configuration error, `3`
 authentication failure, `4` policy refusal.
 
-MCP client configuration over stdio (once tools are available):
+MCP client configuration over stdio:
 
 ```json
 {
