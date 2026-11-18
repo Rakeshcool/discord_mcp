@@ -66,6 +66,109 @@ raises a budget.
 posts to `http://127.0.0.1:8787/mcp` with `Authorization: Bearer <HTTP token>`
 and reuses the `Mcp-Session-Id` returned by `initialize`.
 
+### 2.1 Connecting through the local MCP bridge
+
+The local bridge at `D:\AI\build\mcp` (`llama-mcp-bridge`) can own this server
+as a stdio MCP server. It performs the real `initialize` / `tools/list`
+handshake, namespaces every tool, and exposes two paths: direct tool calls with
+no model involved, and tool injection into a `llama-server` chat loop. The
+direct path needs only Node 18+; the model path additionally needs a running
+`llama-server` and is not covered here.
+
+**Start the bridge.** It is idempotent and reuses an already-listening instance:
+
+```bash
+cd D:/AI/build/mcp
+node scripts/mcp.mjs up --no-connect
+```
+
+Check `ok: true` and `baseUrl`. `upstream.reachable: false` only means no local
+model is running; direct tool calls still work. To connect the bridge's other
+configured servers too, drop `--no-connect`.
+
+**Register this binary once.** `POST /api/servers` with a stdio entry. List the
+token variable in `secretEnv`: the bridge moves its value into
+`data/secrets.json` and stores only the key name in `data/servers.json`.
+
+```json
+{
+  "id": "discord-mcp",
+  "name": "Discord MCP",
+  "enabled": true,
+  "transport": "stdio",
+  "connection": {
+    "command": "D:/AI/build/discord/working_discord_mcp/target/release/discord-mcp.exe",
+    "args": ["serve"],
+    "env": { "DISCORD_BOT_TOKEN": "<bot token>" },
+    "secretEnv": ["DISCORD_BOT_TOKEN"]
+  },
+  "startupTimeoutMs": 30000,
+  "toolTimeoutMs": 60000,
+  "idleTimeoutMs": 300000,
+  "restartPolicy": "on_failure"
+}
+```
+
+Send that body from a script that reads the token from the environment, or use
+the bridge panel (Servers → Add MCP Server), so the token does not land in shell
+history. Add `"--config", "<path>"` to `args` to run an enabled policy instead
+of the read-only built-in defaults.
+
+**Connect it.**
+
+```bash
+curl -s -X POST http://127.0.0.1:7800/api/servers/discord-mcp/connect
+```
+
+A healthy answer reports `"status":"connected"` and `"toolCount":32` (the
+number this build exposes). Connecting is what performs the MCP handshake; the
+entry alone does nothing until then.
+
+**Discover and call.** Tools are namespaced `<serverId>__<toolName>`:
+
+```bash
+node scripts/mcp.mjs tools
+node scripts/mcp.mjs describe discord-mcp__discord_get_capabilities
+node scripts/mcp.mjs call discord-mcp__discord_get_capabilities '{}'
+node scripts/mcp.mjs call discord-mcp__discord_list_guilds '{"limit":5}'
+node scripts/mcp.mjs call discord-mcp__discord_send_message \
+  '{"channel_id":"<id>","content":"hello"}'
+```
+
+Every call returns one envelope:
+
+```json
+{ "ok": true, "tool": "discord-mcp__discord_get_capabilities", "server": "discord-mcp",
+  "durationMs": 665, "isError": false, "result": { "enabled": { "read": true } } }
+```
+
+- `isError: true` is a tool-level refusal or Discord error; read `result` for the
+  `CODE: message` text. A policy-blocked send observed through the bridge:
+  `{"ok":false,"isError":true,"result":"POLICY_BLOCKED: write tools are disabled by policy.write_enabled"}`.
+- Exit code is `0` on success, `1` on a tool error, `2` on bad usage.
+- Per-tool permission `allow` runs immediately; `ask` and `deny` reject direct
+  calls with HTTP 403, because no one is present to approve them.
+
+**Lifecycle.** A server stops itself after `idleTimeoutMs` (5 minutes here). A
+direct `call` reconnects it and reports `"reconnected": true`; discovery commands
+(`tools`, `describe`, `script`, `recipe`) need `node scripts/mcp.mjs up` again.
+The bridge caps a tool call at 60 s, independent of this server's own budget; a
+bulk operation can outlive the call and still complete, so re-read state instead
+of retrying.
+
+**Remove it.**
+
+```bash
+curl -s -X DELETE http://127.0.0.1:7800/api/servers/discord-mcp   # also deletes its secret
+node scripts/mcp.mjs down                                        # stops a bridge this script started
+```
+
+Verified through this bridge against the release build: handshake and `tools/list`
+(32 tools), `discord_get_capabilities`, `discord_list_guilds`,
+`discord_list_channels`, `discord_get_messages`, and a policy-blocked
+`discord_send_message`. Not verified through it: the `llama-server` chat loop, the
+HTTP transport, and any live mutation.
+
 ---
 
 ## 3. Handshake (the host does this)
