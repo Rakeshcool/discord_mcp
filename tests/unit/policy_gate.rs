@@ -2091,6 +2091,45 @@ async fn editing_another_role_still_reaches_discord() {
 }
 
 #[tokio::test]
+async fn the_bot_identity_is_fetched_once_per_gate() {
+    let fake = Arc::new(FakeDiscord::new().with_bot_role(1, 7));
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(administration_config()),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    gated
+        .edit_role(
+            &guild(1),
+            &RoleId::from_u64(8),
+            &RoleEdit {
+                name: Some("renamed".to_string()),
+                ..RoleEdit::default()
+            },
+            false,
+        )
+        .await
+        .expect("a different role may be edited");
+    gated
+        .delete_role(&guild(1), &RoleId::from_u64(8), false)
+        .await
+        .expect("a different role may be deleted");
+
+    assert_eq!(
+        fake.calls(),
+        vec![
+            Call::BotIdentity,
+            Call::HighestRoleOf(1, 99),
+            Call::EditRole(1, 8),
+            Call::HighestRoleOf(1, 99),
+            Call::DeleteRole(1, 8)
+        ],
+        "the bot identity is read once, the role list once per guarded call"
+    );
+}
+
+#[tokio::test]
 async fn removing_the_bots_highest_role_from_itself_is_refused() {
     let fake = Arc::new(FakeDiscord::new().with_bot_role(1, 7));
     let gated = gate(
