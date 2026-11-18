@@ -70,6 +70,7 @@ struct FakeDiscord {
     parents: Mutex<HashMap<u64, u64>>,
     invite_channels: Mutex<HashMap<String, u64>>,
     bot_roles: Mutex<HashMap<u64, u64>>,
+    fail_next: Mutex<Option<AppError>>,
     hold: Mutex<Option<Arc<Semaphore>>>,
     failure: Mutex<Option<AppError>>,
     guilds: Vec<GuildSummary>,
@@ -83,6 +84,7 @@ impl FakeDiscord {
             parents: Mutex::new(HashMap::new()),
             invite_channels: Mutex::new(HashMap::new()),
             bot_roles: Mutex::new(HashMap::new()),
+            fail_next: Mutex::new(None),
             hold: Mutex::new(None),
             failure: Mutex::new(None),
             guilds: Vec::new(),
@@ -138,6 +140,11 @@ impl FakeDiscord {
         self
     }
 
+    fn failing_once(self, error: AppError) -> Self {
+        *self.fail_next.lock().expect("fail next") = Some(error);
+        self
+    }
+
     fn holding(self, semaphore: Arc<Semaphore>) -> Self {
         *self.hold.lock().expect("hold") = Some(semaphore);
         self
@@ -152,6 +159,9 @@ impl FakeDiscord {
         let hold = self.hold.lock().expect("hold").clone();
         if let Some(semaphore) = hold {
             let _permit = semaphore.acquire().await.expect("hold permit");
+        }
+        if let Some(error) = self.fail_next.lock().expect("fail next").take() {
+            return Err(error);
         }
         match self.failure.lock().expect("failure").clone() {
             Some(error) => Err(error),
@@ -2126,6 +2136,49 @@ async fn the_bot_identity_is_fetched_once_per_gate() {
             Call::DeleteRole(1, 8)
         ],
         "the bot identity is read once, the role list once per guarded call"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_bot_identity_lookup_is_not_cached() {
+    let fake = Arc::new(
+        FakeDiscord::new()
+            .with_bot_role(1, 7)
+            .failing_once(AppError::new(
+                ErrorCategory::Network,
+                "identity lookup failed",
+            )),
+    );
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(administration_config()),
+        Arc::new(RecordingAudit::default()),
+    );
+    let spec = RoleEdit {
+        name: Some("renamed".to_string()),
+        ..RoleEdit::default()
+    };
+
+    let error = gated
+        .edit_role(&guild(1), &RoleId::from_u64(8), &spec, false)
+        .await
+        .expect_err("the first identity lookup fails");
+    assert_eq!(error.category(), ErrorCategory::Network);
+
+    gated
+        .edit_role(&guild(1), &RoleId::from_u64(8), &spec, false)
+        .await
+        .expect("the failed lookup must be retried");
+
+    assert_eq!(
+        fake.calls(),
+        vec![
+            Call::BotIdentity,
+            Call::BotIdentity,
+            Call::HighestRoleOf(1, 99),
+            Call::EditRole(1, 8)
+        ],
+        "a failed lookup must not be cached"
     );
 }
 
