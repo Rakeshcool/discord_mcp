@@ -58,7 +58,9 @@ cargo test
 ```
 
 Windows MSVC is the only supported target (`x86_64-pc-windows-msvc`). No WSL or
-Docker is needed.
+Docker is needed. For a release build whose hash is comparable with
+`dist/*.sha256`, run `scripts\build-release.ps1`: it makes the build
+byte-reproducible and prints the artifact's SHA-256.
 
 ## Configuration
 
