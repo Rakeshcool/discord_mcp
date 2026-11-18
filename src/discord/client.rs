@@ -15,9 +15,11 @@ use async_trait::async_trait;
 
 use crate::discord::ids::{ChannelId, GuildId, MessageId, UserId};
 use crate::discord::models::{
-    BotIdentity, ChannelSummary, GuildDetail, GuildSummary, MemberSummary, MessageQuery,
-    MessageSummary, Page,
+    BotIdentity, ChannelEdit, ChannelSummary, GuildDetail, GuildSummary, InviteSummary,
+    MemberSummary, MessageQuery, MessageSummary, NewChannel, NewInvite, NewThread, OverwriteTarget,
+    Page,
 };
+use crate::discord::permissions::PermissionBits;
 use crate::error::AppError;
 
 /// Discord's maximum page size for `GET /users/@me/guilds`.
@@ -170,4 +172,80 @@ pub trait DiscordApi: Send + Sync + std::fmt::Debug {
         message_id: &MessageId,
         dry_run: bool,
     ) -> Result<MutationOutcome<()>, AppError>;
+
+    /// Create a guild channel.
+    async fn create_channel(
+        &self,
+        guild_id: &GuildId,
+        spec: &NewChannel,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<ChannelSummary>, AppError>;
+
+    /// Change a channel's name, topic, age restriction or slowmode.
+    async fn edit_channel(
+        &self,
+        channel_id: &ChannelId,
+        spec: &ChannelEdit,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<ChannelSummary>, AppError>;
+
+    /// Delete a channel.
+    async fn delete_channel(
+        &self,
+        channel_id: &ChannelId,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError>;
+
+    /// Set a role or member overwrite in a channel.
+    async fn set_permission_overwrite(
+        &self,
+        channel_id: &ChannelId,
+        target: OverwriteTarget,
+        allow: PermissionBits,
+        deny: PermissionBits,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError>;
+
+    /// Remove a role or member overwrite from a channel.
+    async fn delete_permission_overwrite(
+        &self,
+        channel_id: &ChannelId,
+        target: OverwriteTarget,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError>;
+
+    /// Create a thread, standalone or from a message.
+    async fn create_thread(
+        &self,
+        channel_id: &ChannelId,
+        spec: &NewThread,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<ChannelSummary>, AppError>;
+
+    /// Archive or unarchive a thread, optionally locking it.
+    async fn edit_thread(
+        &self,
+        thread_id: &ChannelId,
+        archived: Option<bool>,
+        locked: Option<bool>,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<ChannelSummary>, AppError>;
+
+    /// Create an invite for a channel.
+    async fn create_invite(
+        &self,
+        channel_id: &ChannelId,
+        spec: &NewInvite,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<InviteSummary>, AppError>;
+
+    /// Revoke an invite by code.
+    async fn delete_invite(
+        &self,
+        code: &str,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError>;
+
+    /// Look an invite up, so policy can find the channel it belongs to.
+    async fn get_invite(&self, code: &str) -> Result<InviteSummary, AppError>;
 }

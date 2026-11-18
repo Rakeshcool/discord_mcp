@@ -19,6 +19,15 @@ Notable changes to `discord-mcp`, grouped by capability rather than by commit �
   Every mutation takes `dry_run`, is never retried after an ambiguous outcome,
   and shares the action budget. Bulk delete enforces Discord's 2–100 count and
   14-day age rules locally, from the snowflake timestamp.
+- **Server structure (slice 2).** `discord_create_channel`, `discord_edit_channel`,
+  `discord_delete_channel`, `discord_set_permission_overwrite`,
+  `discord_delete_permission_overwrite`, `discord_create_thread`,
+  `discord_edit_thread`, `discord_create_invite` and `discord_delete_invite`, all
+  under `control_enabled`, the channel allowlist, the shared budget and `dry_run`.
+  Permission names resolve to Discord bits and `ADMINISTRATOR` cannot be granted
+  through an overwrite. Threads are authorised through their parent channel and
+  invites through their channel, resolved before an action is spent; a channel
+  created by a tool joins the allowlist only when an operator adds it.
 
 ## v0.1.0 — 2026-11-18
 

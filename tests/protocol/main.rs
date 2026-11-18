@@ -388,8 +388,16 @@ fn tools_are_advertised_with_strict_schemas_and_honest_annotations() {
             "discord_add_reaction",
             "discord_bulk_delete_messages",
             "discord_clear_reactions",
+            "discord_create_channel",
+            "discord_create_invite",
+            "discord_create_thread",
+            "discord_delete_channel",
+            "discord_delete_invite",
             "discord_delete_message",
+            "discord_delete_permission_overwrite",
+            "discord_edit_channel",
             "discord_edit_message",
+            "discord_edit_thread",
             "discord_get_capabilities",
             "discord_get_channel",
             "discord_get_guild",
@@ -402,6 +410,7 @@ fn tools_are_advertised_with_strict_schemas_and_honest_annotations() {
             "discord_pin_message",
             "discord_remove_reaction",
             "discord_send_message",
+            "discord_set_permission_overwrite",
             "discord_unpin_message",
         ]
     );
@@ -454,6 +463,49 @@ fn delete_is_refused_when_control_tools_are_off() {
     let text = tool_error_text(response_with_id(&responses, 2));
     assert!(text.starts_with("POLICY_BLOCKED"), "got {text:?}");
     assert!(text.contains("control"), "got {text:?}");
+}
+
+#[test]
+fn creating_a_channel_is_refused_when_control_tools_are_off() {
+    let frames = session(&tool_call(
+        2,
+        "discord_create_channel",
+        r#"{"guild_id":"1","name":"ops"}"#,
+    ));
+    let responses = run_session(
+        "create-channel-off",
+        "[policy]\nwrite_enabled = true\nchannel_allowlist = [\"4\"]\n",
+        &frames,
+    );
+
+    let text = tool_error_text(response_with_id(&responses, 2));
+    assert!(text.starts_with("POLICY_BLOCKED"), "got {text:?}");
+    assert!(text.contains("control"), "got {text:?}");
+}
+
+#[test]
+fn a_dry_run_thread_reports_the_plan_without_a_request() {
+    let frames = session(&tool_call(
+        2,
+        "discord_create_thread",
+        r#"{"channel_id":"4","name":"incident","dry_run":true}"#,
+    ));
+    let responses = run_session(
+        "dry-run-thread",
+        "[policy]\ncontrol_enabled = true\nchannel_allowlist = [\"4\"]\n",
+        &frames,
+    );
+
+    let result = &response_with_id(&responses, 2)["result"];
+    assert_eq!(result["isError"], false, "{result}");
+    let text = result["content"][0]["text"]
+        .as_str()
+        .expect("a text result");
+    assert!(text.contains("\"dry_run\":true"), "got {text}");
+    assert!(
+        text.contains("discord_create_thread"),
+        "the plan must name the tool: {text}"
+    );
 }
 
 #[test]

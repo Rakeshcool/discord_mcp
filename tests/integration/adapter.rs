@@ -12,8 +12,11 @@ use discord_mcp::config::schema::DiscordConfig;
 use discord_mcp::discord::DiscordApi;
 use discord_mcp::discord::adapter::TwilightDiscord;
 use discord_mcp::discord::client::{MEMBERS_PAGE_MAX, MutationOutcome};
-use discord_mcp::discord::ids::{ChannelId, GuildId, MessageId};
-use discord_mcp::discord::models::{ChannelKind, MessageQuery};
+use discord_mcp::discord::ids::{ChannelId, GuildId, MessageId, RoleId};
+use discord_mcp::discord::models::{
+    ChannelEdit, ChannelKind, MessageQuery, NewChannel, NewInvite, NewThread, OverwriteTarget,
+};
+use discord_mcp::discord::permissions::{PermissionBits, resolve};
 use discord_mcp::error::ErrorCategory;
 use discord_mcp::security::secrets::BotToken;
 
@@ -768,4 +771,234 @@ async fn a_malformed_custom_emoji_is_an_argument_error() {
 
     assert_eq!(error.category(), ErrorCategory::InvalidArgument);
     assert_eq!(mock.request_count(), 0);
+}
+
+fn channel_id(value: &str) -> ChannelId {
+    ChannelId::parse(value).expect("a valid channel id")
+}
+
+#[tokio::test]
+async fn create_channel_posts_name_type_parent_and_nsfw() {
+    let mock = MockDiscord::start(|request| {
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.route(), "/api/v10/guilds/2002/channels");
+        let body = request.json();
+        assert_eq!(body["name"], "ops");
+        assert_eq!(body["type"], 0);
+        assert_eq!(body["parent_id"], "5005");
+        assert_eq!(body["nsfw"], true);
+        MockResponse::json(channel_detail())
+    })
+    .await;
+    let api = adapter_for(&mock);
+    let spec = NewChannel {
+        name: "ops".to_string(),
+        kind: ChannelKind::Text,
+        parent_id: Some(channel_id("5005")),
+        topic: None,
+        nsfw: true,
+        position: None,
+    };
+
+    let outcome = api
+        .create_channel(
+            &GuildId::parse(GUILD_ID).expect("valid guild id"),
+            &spec,
+            false,
+        )
+        .await
+        .expect("the channel must be created");
+
+    match outcome {
+        MutationOutcome::Applied(created) => assert_eq!(created.id, channel_id(CHANNEL_ID)),
+        MutationOutcome::Planned => panic!("a real call cannot be planned"),
+    }
+}
+
+#[tokio::test]
+async fn edit_channel_patches_only_the_fields_given() {
+    let mock = MockDiscord::start(|request| {
+        assert_eq!(request.method, "PATCH");
+        assert_eq!(request.route(), "/api/v10/channels/4004");
+        let body = request.json();
+        assert_eq!(body["name"], "renamed");
+        assert_eq!(body["rate_limit_per_user"], 30);
+        assert!(body["topic"].is_null(), "an unset field must stay unset");
+        MockResponse::json(channel_detail())
+    })
+    .await;
+    let api = adapter_for(&mock);
+    let spec = ChannelEdit {
+        name: Some("renamed".to_string()),
+        slowmode_seconds: Some(30),
+        ..ChannelEdit::default()
+    };
+
+    api.edit_channel(&channel(CHANNEL_ID), &spec, false)
+        .await
+        .expect("the channel must be edited");
+}
+
+#[tokio::test]
+async fn delete_channel_sends_one_delete() {
+    let mock = MockDiscord::start(|request| {
+        assert_eq!(request.method, "DELETE");
+        assert_eq!(request.route(), "/api/v10/channels/4004");
+        // Discord answers a channel delete with the deleted channel.
+        MockResponse::json(channel_detail())
+    })
+    .await;
+    let api = adapter_for(&mock);
+
+    let outcome = api
+        .delete_channel(&channel(CHANNEL_ID), false)
+        .await
+        .expect("the channel must be deleted");
+
+    assert_eq!(outcome, MutationOutcome::Applied(()));
+    assert_eq!(mock.request_count(), 1);
+}
+
+#[tokio::test]
+async fn a_permission_overwrite_is_put_for_the_target() {
+    let allow = resolve(&["VIEW_CHANNEL".to_string()], "allow", false).expect("known name");
+    let mock = MockDiscord::start(|request| {
+        assert_eq!(request.method, "PUT");
+        assert_eq!(request.route(), "/api/v10/channels/4004/permissions/7007");
+        let body = request.json();
+        assert_eq!(body["type"], 0, "0 is a role overwrite");
+        assert!(
+            body["allow"].to_string().contains("1024"),
+            "VIEW_CHANNEL is bit 10: {}",
+            body["allow"]
+        );
+        MockResponse::json("").status(204)
+    })
+    .await;
+    let api = adapter_for(&mock);
+
+    api.set_permission_overwrite(
+        &channel(CHANNEL_ID),
+        OverwriteTarget::Role(RoleId::parse("7007").expect("valid role id")),
+        allow,
+        PermissionBits::default(),
+        false,
+    )
+    .await
+    .expect("the overwrite must be set");
+}
+
+#[tokio::test]
+async fn a_permission_overwrite_is_deleted_for_the_target() {
+    let mock = MockDiscord::start(|request| {
+        assert_eq!(request.method, "DELETE");
+        assert_eq!(request.route(), "/api/v10/channels/4004/permissions/7007");
+        MockResponse::json("").status(204)
+    })
+    .await;
+    let api = adapter_for(&mock);
+
+    api.delete_permission_overwrite(
+        &channel(CHANNEL_ID),
+        OverwriteTarget::Role(RoleId::parse("7007").expect("valid role id")),
+        false,
+    )
+    .await
+    .expect("the overwrite must be deleted");
+}
+
+#[tokio::test]
+async fn create_thread_posts_a_public_thread_with_its_archive_delay() {
+    let mock = MockDiscord::start(|request| {
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.route(), "/api/v10/channels/4004/threads");
+        let body = request.json();
+        assert_eq!(body["name"], "incident");
+        assert_eq!(body["type"], 11, "11 is a public thread");
+        assert_eq!(body["auto_archive_duration"], 1440);
+        MockResponse::json(channel_detail())
+    })
+    .await;
+    let api = adapter_for(&mock);
+    let spec = NewThread {
+        name: "incident".to_string(),
+        from_message: None,
+        private: false,
+        auto_archive_minutes: Some(1_440),
+    };
+
+    api.create_thread(&channel(CHANNEL_ID), &spec, false)
+        .await
+        .expect("the thread must be created");
+}
+
+#[tokio::test]
+async fn edit_thread_archives_it() {
+    let mock = MockDiscord::start(|request| {
+        assert_eq!(request.method, "PATCH");
+        assert_eq!(request.route(), "/api/v10/channels/4004");
+        assert_eq!(request.json()["archived"], true);
+        MockResponse::json(channel_detail())
+    })
+    .await;
+    let api = adapter_for(&mock);
+
+    api.edit_thread(&channel(CHANNEL_ID), Some(true), None, false)
+        .await
+        .expect("the thread must be archived");
+}
+
+#[tokio::test]
+async fn create_invite_sends_its_limits_and_maps_the_code() {
+    let mock = MockDiscord::start(|request| {
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.route(), "/api/v10/channels/4004/invites");
+        let body = request.json();
+        assert_eq!(body["max_age"], 3600);
+        assert_eq!(body["max_uses"], 1);
+        assert_eq!(body["temporary"], true);
+        assert_eq!(body["unique"], true);
+        MockResponse::json(
+            r#"{"code":"abc123","type":0,"channel":{"id":"4004","name":"general","type":0}}"#,
+        )
+    })
+    .await;
+    let api = adapter_for(&mock);
+    let spec = NewInvite {
+        max_age_seconds: 3_600,
+        max_uses: 1,
+        temporary: true,
+        unique: true,
+    };
+
+    let outcome = api
+        .create_invite(&channel(CHANNEL_ID), &spec, false)
+        .await
+        .expect("the invite must be created");
+
+    match outcome {
+        MutationOutcome::Applied(invite) => {
+            assert_eq!(invite.code, "abc123");
+            assert_eq!(invite.channel_id, Some(channel_id(CHANNEL_ID)));
+        }
+        MutationOutcome::Planned => panic!("a real call cannot be planned"),
+    }
+}
+
+#[tokio::test]
+async fn delete_invite_sends_one_delete_by_code() {
+    let mock = MockDiscord::start(|request| {
+        assert_eq!(request.method, "DELETE");
+        assert_eq!(request.route(), "/api/v10/invites/abc123");
+        MockResponse::json("").status(204)
+    })
+    .await;
+    let api = adapter_for(&mock);
+
+    let outcome = api
+        .delete_invite("abc123", false)
+        .await
+        .expect("the invite must be revoked");
+
+    assert_eq!(outcome, MutationOutcome::Applied(()));
 }

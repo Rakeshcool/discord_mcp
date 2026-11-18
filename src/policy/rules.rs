@@ -59,7 +59,16 @@ pub fn classify_tool(name: &str) -> Option<ToolRisk> {
         | "discord_clear_reactions"
         | "discord_pin_message"
         | "discord_unpin_message" => Some(ToolRisk::Write),
-        "discord_delete_message" => Some(ToolRisk::Destructive),
+        "discord_delete_message"
+        | "discord_create_channel"
+        | "discord_edit_channel"
+        | "discord_delete_channel"
+        | "discord_set_permission_overwrite"
+        | "discord_delete_permission_overwrite"
+        | "discord_create_thread"
+        | "discord_edit_thread"
+        | "discord_create_invite"
+        | "discord_delete_invite" => Some(ToolRisk::Destructive),
         "discord_bulk_delete_messages" => Some(ToolRisk::Administrative),
         _ => None,
     }
@@ -307,6 +316,16 @@ impl Policy {
     /// Whether a guild may be touched, without building an error.
     pub fn allows_guild(&self, guild_id: &GuildId) -> bool {
         self.check_guild(guild_id).is_ok()
+    }
+
+    /// Whether a channel allowlist narrows the scope at all.
+    pub fn channel_restricted(&self) -> bool {
+        !self.channels.is_empty()
+    }
+
+    /// Whether a channel may be touched, without building an error.
+    pub fn allows_channel(&self, channel_id: &ChannelId) -> bool {
+        self.check_channel(channel_id).is_ok()
     }
 
     /// Whether a channel may be touched.

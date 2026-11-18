@@ -24,8 +24,11 @@ use twilight_http::request::channel::reaction::RequestReactionType;
 use twilight_http::response::ResponseFuture;
 use twilight_http::response::marker::ListBody;
 use twilight_model::channel::message::Message;
+use twilight_model::channel::thread::AutoArchiveDuration;
 use twilight_model::channel::{Channel, ChannelType};
-use twilight_model::guild::{Guild, Member};
+use twilight_model::guild::invite::Invite;
+use twilight_model::guild::{Guild, Member, Permissions};
+use twilight_model::http::permission_overwrite::{PermissionOverwrite, PermissionOverwriteType};
 use twilight_model::id::Id;
 use twilight_model::id::marker::{ChannelMarker, GuildMarker, MessageMarker, UserMarker};
 use twilight_model::user::{CurrentUser, CurrentUserGuild};
@@ -37,9 +40,11 @@ use crate::discord::client::{
 use crate::discord::errors::{map_discord_error, read_body_error};
 use crate::discord::ids::{ChannelId, GuildId, MessageId, UserId};
 use crate::discord::models::{
-    BotIdentity, ChannelKind, ChannelSummary, GuildDetail, GuildSummary, MemberSummary,
-    MessageAuthor, MessageQuery, MessageSummary, Page,
+    BotIdentity, ChannelEdit, ChannelKind, ChannelSummary, GuildDetail, GuildSummary,
+    InviteSummary, MemberSummary, MessageAuthor, MessageQuery, MessageSummary, NewChannel,
+    NewInvite, NewThread, OverwriteTarget, Page,
 };
+use crate::discord::permissions::PermissionBits;
 use crate::discord::rate_limit::{backoff, is_transient};
 use crate::error::{AppError, ErrorCategory};
 use crate::security::secrets::BotToken;
@@ -605,6 +610,216 @@ impl DiscordApi for TwilightDiscord {
         .await?;
         Ok(MutationOutcome::Applied(()))
     }
+
+    async fn create_channel(
+        &self,
+        guild_id: &GuildId,
+        spec: &NewChannel,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<ChannelSummary>, AppError> {
+        let channel: Channel = self
+            .send_once("discord_create_channel", || {
+                let mut request = self
+                    .client
+                    .create_guild_channel(Id::new(guild_id.get()), &spec.name)
+                    .kind(ChannelType::from(spec.kind.to_code()))
+                    .nsfw(spec.nsfw);
+                if let Some(parent) = spec.parent_id {
+                    request = request.parent_id(Id::new(parent.get()));
+                }
+                if let Some(topic) = &spec.topic {
+                    request = request.topic(topic);
+                }
+                if let Some(position) = spec.position {
+                    request = request.position(u64::from(position));
+                }
+                read_one(IntoFuture::into_future(request))
+            })
+            .await?;
+        Ok(MutationOutcome::Applied(channel_summary(channel)))
+    }
+
+    async fn edit_channel(
+        &self,
+        channel_id: &ChannelId,
+        spec: &ChannelEdit,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<ChannelSummary>, AppError> {
+        let channel: Channel = self
+            .send_once("discord_edit_channel", || {
+                let mut request = self.client.update_channel(Id::new(channel_id.get()));
+                if let Some(name) = &spec.name {
+                    request = request.name(name);
+                }
+                if let Some(topic) = &spec.topic {
+                    request = request.topic(topic);
+                }
+                if let Some(nsfw) = spec.nsfw {
+                    request = request.nsfw(nsfw);
+                }
+                if let Some(seconds) = spec.slowmode_seconds {
+                    request = request.rate_limit_per_user(seconds);
+                }
+                read_one(IntoFuture::into_future(request))
+            })
+            .await?;
+        Ok(MutationOutcome::Applied(channel_summary(channel)))
+    }
+
+    async fn delete_channel(
+        &self,
+        channel_id: &ChannelId,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.send_once("discord_delete_channel", || {
+            read_one(IntoFuture::into_future(
+                self.client.delete_channel(Id::new(channel_id.get())),
+            ))
+        })
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn set_permission_overwrite(
+        &self,
+        channel_id: &ChannelId,
+        target: OverwriteTarget,
+        allow: PermissionBits,
+        deny: PermissionBits,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        let overwrite = permission_overwrite(target, allow, deny);
+        self.send_once("discord_set_permission_overwrite", || {
+            read_empty(IntoFuture::into_future(
+                self.client
+                    .update_channel_permission(Id::new(channel_id.get()), &overwrite),
+            ))
+        })
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn delete_permission_overwrite(
+        &self,
+        channel_id: &ChannelId,
+        target: OverwriteTarget,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.send_once("discord_delete_permission_overwrite", || {
+            let request = self
+                .client
+                .delete_channel_permission(Id::new(channel_id.get()));
+            let request = match target {
+                OverwriteTarget::Role(role) => request.role(Id::new(role.get())),
+                OverwriteTarget::Member(user) => request.member(Id::new(user.get())),
+            };
+            read_empty(IntoFuture::into_future(request))
+        })
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn create_thread(
+        &self,
+        channel_id: &ChannelId,
+        spec: &NewThread,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<ChannelSummary>, AppError> {
+        let channel: Channel = self
+            .send_once("discord_create_thread", || match spec.from_message {
+                Some(message_id) => {
+                    let mut request = self.client.create_thread_from_message(
+                        Id::new(channel_id.get()),
+                        Id::new(message_id.get()),
+                        &spec.name,
+                    );
+                    if let Some(minutes) = spec.auto_archive_minutes {
+                        request = request.auto_archive_duration(auto_archive(minutes));
+                    }
+                    read_one(IntoFuture::into_future(request))
+                }
+                None => {
+                    let kind = if spec.private {
+                        ChannelType::PrivateThread
+                    } else {
+                        ChannelType::PublicThread
+                    };
+                    let mut request =
+                        self.client
+                            .create_thread(Id::new(channel_id.get()), &spec.name, kind);
+                    if let Some(minutes) = spec.auto_archive_minutes {
+                        request = request.auto_archive_duration(auto_archive(minutes));
+                    }
+                    read_one(IntoFuture::into_future(request))
+                }
+            })
+            .await?;
+        Ok(MutationOutcome::Applied(channel_summary(channel)))
+    }
+
+    async fn edit_thread(
+        &self,
+        thread_id: &ChannelId,
+        archived: Option<bool>,
+        locked: Option<bool>,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<ChannelSummary>, AppError> {
+        let channel: Channel = self
+            .send_once("discord_edit_thread", || {
+                let mut request = self.client.update_thread(Id::new(thread_id.get()));
+                if let Some(archived) = archived {
+                    request = request.archived(archived);
+                }
+                if let Some(locked) = locked {
+                    request = request.locked(locked);
+                }
+                read_one(IntoFuture::into_future(request))
+            })
+            .await?;
+        Ok(MutationOutcome::Applied(channel_summary(channel)))
+    }
+
+    async fn create_invite(
+        &self,
+        channel_id: &ChannelId,
+        spec: &NewInvite,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<InviteSummary>, AppError> {
+        let invite: Invite = self
+            .send_once("discord_create_invite", || {
+                read_one(IntoFuture::into_future(
+                    self.client
+                        .create_invite(Id::new(channel_id.get()))
+                        .max_age(spec.max_age_seconds)
+                        .max_uses(spec.max_uses)
+                        .temporary(spec.temporary)
+                        .unique(spec.unique),
+                ))
+            })
+            .await?;
+        Ok(MutationOutcome::Applied(invite_summary(invite)))
+    }
+
+    async fn delete_invite(
+        &self,
+        code: &str,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.send_once("discord_delete_invite", || {
+            read_empty(IntoFuture::into_future(self.client.delete_invite(code)))
+        })
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn get_invite(&self, code: &str) -> Result<InviteSummary, AppError> {
+        let invite: Invite = self
+            .send("discord_delete_invite", || {
+                read_one(IntoFuture::into_future(self.client.invite(code)))
+            })
+            .await?;
+        Ok(invite_summary(invite))
+    }
 }
 
 /// Turn a tool's emoji argument into a reaction target.
@@ -637,6 +852,58 @@ fn reaction_type(emoji: &str) -> Result<RequestReactionType<'_>, AppError> {
         ));
     }
     Ok(RequestReactionType::Unicode { name: emoji })
+}
+
+/// Discord types invite counts as `u64`; the report keeps them small.
+fn saturating_u16(value: u64) -> u16 {
+    u16::try_from(value).unwrap_or(u16::MAX)
+}
+
+/// Map a validated auto-archive delay to twilight's enum.
+///
+/// The tool accepts only Discord's four documented values, so the fallback is
+/// unreachable and exists to keep this total.
+fn auto_archive(minutes: u16) -> AutoArchiveDuration {
+    match minutes {
+        60 => AutoArchiveDuration::Hour,
+        1_440 => AutoArchiveDuration::Day,
+        4_320 => AutoArchiveDuration::ThreeDays,
+        10_080 => AutoArchiveDuration::Week,
+        other => AutoArchiveDuration::Unknown { value: other },
+    }
+}
+
+/// Build the overwrite body Discord expects.
+///
+/// An empty side is sent as zero rather than omitted: the overwrite is the
+/// complete rule for that target, so an omitted half would mean "unchanged"
+/// semantics the caller did not ask for.
+fn permission_overwrite(
+    target: OverwriteTarget,
+    allow: PermissionBits,
+    deny: PermissionBits,
+) -> PermissionOverwrite {
+    let (id, kind) = match target {
+        OverwriteTarget::Role(role) => (role.get(), PermissionOverwriteType::Role),
+        OverwriteTarget::Member(user) => (user.get(), PermissionOverwriteType::Member),
+    };
+    PermissionOverwrite {
+        allow: Some(Permissions::from_bits_truncate(allow.bits())),
+        deny: Some(Permissions::from_bits_truncate(deny.bits())),
+        id: Id::new(id),
+        kind,
+    }
+}
+
+fn invite_summary(invite: Invite) -> InviteSummary {
+    InviteSummary {
+        code: invite.code,
+        channel_id: invite.channel.map(|channel| channel.id).map(channel_id),
+        guild_id: invite.guild.map(|guild| guild.id).map(guild_id),
+        expires_at: invite.expires_at.map(|value| value.iso_8601().to_string()),
+        max_uses: invite.max_uses.map(saturating_u16),
+        uses: invite.uses.map(saturating_u16),
+    }
 }
 
 /// Reject a zero page size and clamp anything above Discord's maximum.
