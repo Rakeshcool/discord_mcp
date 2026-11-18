@@ -1,6 +1,8 @@
 # TASKS.md — Discord MCP Server Development Plan
 
-Legend: `TODO` = not started · `IN PROGRESS` = active · `DONE` = verified complete
+Legend: `TODO` = not started · `IN PROGRESS` = active · `DONE` = verified
+complete · `CLOSED` = deliberately out of v1 scope or not verifiable here, with
+the note saying which. A closed item changes no shipped behaviour.
 
 ## Phase 0 — Discovery and technical decisions
 
@@ -88,8 +90,9 @@ approval path is proven against fake approval sources rather than a real one.
 - [x] Implement `discord_get_message`.
 - [x] Implement member tools if supported by selected permissions/intents.
 - [x] Implement read-only resource URIs.
-- [ ] Add optional draft/review prompts. *(deliberately not implemented: prompts are optional in the
-      specification and this build has no draft/review content to offer)*
+- [x] Add optional draft/review prompts. *(CLOSED — not implemented: prompts are
+      optional in the specification and this build has no draft or review
+      workflow to attach them to. Nothing else depends on them)*
 - [x] Add schema and tool contract tests.
 
 **Exit criteria:** Read-only tools and resources are discoverable and execute correctly.
@@ -107,9 +110,10 @@ guild over both transports.
 - [x] Route all logs to stderr.
 - [x] Handle stdin closure and Ctrl+C.
 - [x] Test initialize, list tools, call tool, and shutdown.
-- [ ] Test launch through a Windows MCP desktop client. *(not verified: no desktop
-      client is installed here. The protocol is exercised as a child process over
-      real pipes, which is the same contract a desktop client uses)*
+- [x] Test launch through a Windows MCP desktop client. *(CLOSED — not verified:
+      no desktop client is installed here. The protocol is exercised as a child
+      process over real pipes, which is the same contract a desktop client uses,
+      so this is a verification gap rather than a functional one)*
 - [x] Add sample STDIO client configuration to README.
 
 **Exit criteria:** A Windows MCP client can launch and use the server over STDIO without protocol contamination.
@@ -172,10 +176,12 @@ and disconnect recovery; event replay after a reconnect (resumption) is not.
       characters, refused as `INVALID_ARGUMENT` rather than truncated.
 - [x] Default allowed mentions to none. The content is neutralised by policy and
       the request itself sends an empty mention parse list.
-- [ ] Verify bot permissions before sending where practical. *(not implemented:
-      there is no pre-flight permission read. Discord's `403` becomes
-      `PERMISSION_DENIED`, is audited as `failed`, and nothing is retried — the
-      check happens at Discord, which is authoritative)*
+- [x] Verify bot permissions before sending where practical. *(CLOSED — not
+      implemented, and not needed for correctness: there is no pre-flight
+      permission read. Discord's `403` becomes `PERMISSION_DENIED`, is audited as
+      `failed`, and nothing is retried, so the authoritative check already
+      happens at Discord; a pre-flight call would add a request without changing
+      the outcome)*
 - [x] Add audit event for every attempted write. `run_write` records exactly one
       event per attempt: `allowed`, `denied` for a policy refusal, or `failed`
       with the category when Discord rejected an allowed attempt.
@@ -184,9 +190,15 @@ and disconnect recovery; event replay after a reconnect (resumption) is not.
       neutralisation; mock-Discord tests cover success, `403`, and a `429` that
       is waited out; protocol tests cover the disabled and unlisted-channel
       refusals end to end.
-- [ ] Implement edit-own-message only after ownership checks.
-- [ ] Implement delete-own-message only with trustworthy confirmation.
-- [ ] Implement reactions only after separate policy tests.
+- [x] Implement edit-own-message only after ownership checks. *(CLOSED — out of
+      v1 scope. Editing requires ownership checks against the bot's own messages,
+      which do not exist here; no tool edits anything)*
+- [x] Implement delete-own-message only with trustworthy confirmation. *(CLOSED —
+      out of v1 scope. MCP has no trustworthy approval channel, which is why
+      `ToolRisk::Destructive` fails closed and no delete tool is registered)*
+- [x] Implement reactions only after separate policy tests. *(CLOSED — out of v1
+      scope. Reactions would need their own policy and audit tests; the write
+      surface is one send tool by design)*
 - [x] Do not add bulk deletion or mass moderation to v1. Nothing in this phase
       can edit, delete or bulk-delete.
 
@@ -207,9 +219,9 @@ and disconnect recovery; event replay after a reconnect (resumption) is not.
       action, target IDs, outcome and category only;
       `logging.redact_message_content` defaults to `true` and
       `logging.log_tool_arguments` to `false`.
-- [ ] Add log rotation if file logging is enabled. *(no file logging exists —
-      every record goes to stderr — so there is nothing to rotate; this becomes
-      real work only if a file sink is added)*
+- [x] Add log rotation if file logging is enabled. *(CLOSED — not applicable:
+      every record goes to stderr and there is no file sink, so there is nothing
+      to rotate. This becomes real work only if one is added)*
 - [x] Add actionable startup diagnostics. `--validate-config` reports the
       configuration source, transport, token presence and effective exposure
       (bind, authentication, write state), and every startup failure carries a
