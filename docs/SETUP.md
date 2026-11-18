@@ -291,24 +291,12 @@ To use a custom configuration, add `"--config", "D:\\...\\config\\local.toml"` t
 
 ### What the server exposes
 
-| Tool | Arguments | What it does |
-|---|---|---|
-| `discord_list_guilds` | `limit?`, `after?` | Guilds the bot is in |
-| `discord_get_guild` | `guild_id` | One guild |
-| `discord_list_channels` | `guild_id` | Channels the bot can see |
-| `discord_get_channel` | `channel_id` | One channel |
-| `discord_get_messages` | `channel_id`, `limit?`, `before?`, `after?` | A page of history, newest first |
-| `discord_get_message` | `channel_id`, `message_id` | One message |
-| `discord_list_members` | `guild_id`, `limit?`, `after?` | Guild members (needs Server Members intent) |
-| `discord_get_member` | `guild_id`, `user_id` | One member |
-| `discord_send_message` | `channel_id`, `content` | Posts one message; refused unless writes are enabled |
+Eight read tools, one write tool (`discord_send_message`, refused unless writes
+are enabled) and the `discord://guilds` resource. Argument schemas reject unknown
+fields, and Discord snowflakes are decimal strings, never numbers.
 
-Resource: `discord://guilds` — the same guild listing as a resource, for clients
-that prefer resources over tools.
-
-Argument schemas reject unknown fields, and Discord snowflakes are decimal
-strings (`"1572365819281932408"`), never numbers. **Per-tool arguments, result
-shapes and error codes are in [`docs/TOOLS.md`](TOOLS.md).**
+**[`docs/TOOLS.md`](TOOLS.md) is the reference**: every argument, result shape,
+policy precondition and error code.
 
 ### Enabling writes
 

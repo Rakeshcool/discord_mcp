@@ -202,13 +202,13 @@ session, and no database — the process holds nothing beyond the current call.
   mode. In-flight requests are capped by `http.max_in_flight_requests` and
   Discord calls by `policy.max_concurrent_requests`.
 
-## 7. Not yet implemented (tracked, not claimed)
+## 7. Out of scope
 
-| Control | Phase |
+| Control | Why |
 |---|---|
-| Draft/review prompts | not scheduled (optional in the specification) |
-| Packaging: SHA-256 checksum, clean-install test, first tag | Phase 9 |
-| Release gate: full test suite, `fmt`, Clippy, acceptance criteria | Phase 10 |
+| Draft/review prompts | optional in the specification; no draft or review workflow to attach them to |
+
+Everything else in this document describes shipped behaviour.
 
 ## 8. Reporting
 

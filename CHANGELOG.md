@@ -9,7 +9,7 @@ Notable changes to `discord-mcp`, grouped by capability rather than by commit �
 `dist/discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256` records the SHA-256 of the
 executable built from it. The release attaches `discord-mcp.exe` and that
 checksum file; the executable is an attachment, never a file in the repository.
-Phase 10 of `TASKS.md` is the release gate, signed off against this artifact, and
+The release gate in `TASKS.md` was signed off against this artifact, and
 GitHub's own asset digest matches the committed hash.
 
 This build reads Discord through an official bot identity and speaks MCP over
@@ -147,18 +147,9 @@ channels, and only when writes are deliberately enabled.
   release named `discord-mcp v0.1.0` whose assets are `discord-mcp.exe`
   (11,625,984 bytes) and `discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256`.
 - `dist/discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256` records the SHA-256 of
-  the release executable, and the build is byte-reproducible, so the file
-  verifies a rebuild instead of identifying one build. `build.rs` passes
-  `/Brepro` — without it the MSVC linker stamps the link time and a random PDB
-  GUID into every executable — and `scripts/build-release.ps1` remaps the
-  absolute Cargo-registry and workspace paths that dependency panic messages
-  embed. `docs/SETUP.md` §8 rebuilds and compares. Reproducibility is scoped to
-  one checkout: a build from a different directory differs, because Cargo hashes
-  the package's absolute path into crate metadata and that reorders symbols.
-- The release build was verified from a clean checkout of the tag
-  (`git worktree`, `cargo build --release --locked`), then `--validate-config` and
-  a STDIO handshake from that tree — the guide's §3 path needs no file that is
-  not committed.
+  the release executable. The build is byte-reproducible within a checkout
+  (`build.rs` passes `/Brepro`; `scripts/build-release.ps1` remaps absolute
+  paths), so `docs/SETUP.md` §8 rebuilds and compares.
 
 ### Documentation
 
@@ -185,35 +176,9 @@ channels, and only when writes are deliberately enabled.
   documented rather than worked around, including how to confirm the toggle from
   the application's `flags`.
 
-### Verified
-
-- 151 tests pass: 84 unit, 30 integration (the real twilight client against a
-  local mock Discord over a socket), 24 protocol (the real binary as a child
-  process over stdio, plus HTTP refusals, session lifecycle and a dropped event
-  stream), 13 library unit tests.
-- `cargo fmt --all --check`, `cargo clippy --all-targets --all-features --
-  -D warnings` and `cargo build --release` (`x86_64-pc-windows-msvc`) pass.
-- `cargo-audit 0.23.0` against the committed `Cargo.lock`: 204 crates, 0
-  vulnerabilities, 1 unmaintained-crate warning (`chrono`, reached through
-  `rmcp`/`schemars`, no fixed version). Recorded in `docs/DEPENDENCIES.md`.
-- Release build from a clean checkout of the tag: `cargo build --release
-  --locked` on a fresh `git worktree`, then `--validate-config` and the STDIO
-  handshake from that tree. Not yet installed on a second machine.
-- SHA-256 of the release executable recorded in `dist/`. Repeated builds of the
-  tag hash to the committed value, including a build from an empty `target/`; a
-  build from a different directory does not, which the docs state.
-- Release gate (Phase 10) signed off against the clean release artifact: 151
-  tests, `fmt`, Clippy, a from-scratch MSVC release build, protocol-clean STDIO
-  output, the HTTP refusals (`401`, `401`, `403`, `403`), writes and mass mentions
-  off by default, rate-limit handling, and documentation re-checked against the
-  code. Nothing is published.
-- Read tools exercised end to end against a real guild over both transports,
-  including non-empty message text after enabling the intent, and the HTTP gate
-  checked by hand (`401`, `401`, `403`, `403`, `200`, `202`, `400`).
-
 ### Not in this build
 
-- More write operations (Phase 7): the send tool exists, but nothing can edit,
+- More write operations: the send tool exists, but nothing can edit,
   delete, react or bulk-delete, and it stays off unless deliberately enabled.
 - No TLS termination; a non-loopback bind belongs behind a proxy that terminates
   TLS, and `docs/SETUP.md` §7 documents the settings it must use.

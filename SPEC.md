@@ -182,43 +182,6 @@ Every tool must:
 - Return structured content plus a concise human-readable summary where supported.
 - Never return bot tokens, authorization headers, or internal stack traces.
 
-### 6.4 Suggested tool input contracts
-
-`discord_list_channels`
-```json
-{
-  "guild_id": "string",
-  "channel_type": "optional string enum",
-  "limit": "optional integer, default 100, max 200"
-}
-```
-
-`discord_get_messages`
-```json
-{
-  "channel_id": "string",
-  "limit": "integer, default 20, min 1, max 100",
-  "before": "optional Discord message ID",
-  "after": "optional Discord message ID"
-}
-```
-
-`discord_send_message`
-```json
-{
-  "channel_id": "string",
-  "content": "string, 1..2000 characters",
-  "allowed_mentions": {
-    "parse": [],
-    "users": [],
-    "roles": [],
-    "replied_user": false
-  }
-}
-```
-
-The implementation must use Discord's actual current request schema and limits. The contracts above are application-level guidance, not a substitute for API validation. Default to no parsed mentions to prevent accidental `@everyone`, role, or user notifications.
-
 ## 7. MCP resources and prompts
 
 ### 7.1 Resources
@@ -383,70 +346,8 @@ Return safe, actionable messages. Keep raw diagnostics in redacted logs. Preserv
 - Include health/readiness information for HTTP deployment without exposing secrets.
 - Never send diagnostics to STDIO stdout.
 
-## 14. Testing strategy
+## 14. Key design rule
 
-### Unit tests
-- Snowflake ID validation.
-- Input schema validation and bounds.
-- Allowlist and policy decisions.
-- Mention sanitization/default behavior.
-- Error mapping.
-- Secret redaction.
-- Configuration defaults and invalid configurations.
-
-### Integration tests
-- Mock Discord HTTP API responses.
-- Pagination and ordering.
-- Rate-limit handling and retry behavior.
-- Authentication failures and missing permissions.
-- Message send/edit/delete behavior with writes disabled/enabled.
-- STDIO protocol framing and stdout cleanliness.
-- Streamable HTTP initialization, sessions, origins, auth, and timeouts.
-
-### Live tests
-- Optional, explicitly enabled test suite using a dedicated test bot and test guild.
-- Never run live destructive tests against a real production server.
-- Require an environment flag and test guild/channel allowlist.
-- Do not require real credentials for ordinary CI.
-
-### Compatibility tests
-- Connect using at least one MCP desktop client over STDIO.
-- Connect using an MCP client over Streamable HTTP.
-- Verify tool schemas and protocol behavior against the current MCP specification and SDK.
-
-## 15. Release acceptance criteria
-
-A release is acceptable only when:
-- Both transports pass protocol integration tests.
-- STDIO stdout contains protocol output only.
-- No user-token or self-bot path exists.
-- Bot token is never logged or returned.
-- HTTP is loopback-only by default.
-- Non-loopback HTTP requires authentication and documented secure deployment.
-- Read tools enforce bot visibility and local policy.
-- Write tools are disabled by default.
-- Mass mentions are disabled by default.
-- Discord rate limits are respected.
-- Errors are mapped to stable categories.
-- Configuration validation fails safely.
-- CI builds and tests the Windows MSVC target.
-- README documents bot setup, permissions, configuration, transport setup, limitations, and troubleshooting.
-
-## 16. Implementation sequence
-
-1. Confirm the current MCP Rust SDK and Discord library versions.
-2. Create the Rust workspace and configuration/secret model.
-3. Implement Discord REST client and typed domain models.
-4. Implement policy and validation layers.
-5. Implement read-only use cases.
-6. Expose read-only MCP tools and resources.
-7. Implement STDIO transport and compatibility tests.
-8. Implement Streamable HTTP with safe defaults.
-9. Add write tools behind disabled-by-default policy.
-10. Add audit logging, rate-limit handling, and hardening.
-11. Run mock integration and optional test-guild live tests.
-12. Package Windows binaries and write operator documentation.
-
-## 17. Key design rule
-
-MCP is the interface, not the permission system. Discord permissions, local policy, and explicit approval must all be enforced before a write operation is sent. The server must fail closed when policy or authorization state is unclear.
+MCP is the interface, not the permission system. Discord permissions, local
+policy, and explicit approval must all be enforced before a write operation is
+sent. The server must fail closed when policy or authorization state is unclear.
