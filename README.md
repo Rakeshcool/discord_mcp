@@ -86,16 +86,18 @@ channel_allowlist = ["1572365820133118035"]
 ```
 
 Message editing, reactions and pins follow `write_enabled`; deleting a message
-and every channel, permission, thread and invite tool need `control_enabled`,
-bulk delete needs `administrative_enabled`, and each class has its own allowlist
-requirement. Every mutation is audited, limited by a shared per-minute budget,
+and every channel, permission, thread and invite tool need `control_enabled`;
+bulk delete and every role tool need `administrative_enabled`; each class has its
+own allowlist requirement. Every mutation is audited, limited by a shared per-minute budget,
 and never retried. `--read-only` (or `DISCORD_MCP_READ_ONLY=1`) overrides the
 file and disables all of them for a session.
 
 Structural tools stay inside the allowlist: a thread is checked through its
 parent channel, an invite through the channel it points at, and a channel these
 tools create must be added to `channel_allowlist` before anything may edit or
-delete it. A `dry_run` names the action and sends no request.
+delete it. Role tools are guild-scoped, so `guild_allowlist` is their boundary,
+and editing a role's permissions replaces the whole set rather than merging into
+it. A `dry_run` names the action and sends no request.
 
 ## Streamable HTTP
 

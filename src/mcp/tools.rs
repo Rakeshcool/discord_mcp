@@ -30,7 +30,8 @@ use serde::{Deserialize, Serialize};
 use crate::discord::client::GUILDS_PAGE_MAX;
 use crate::discord::ids::{ChannelId, GuildId, MessageId, RoleId, UserId};
 use crate::discord::models::{
-    ChannelEdit, ChannelKind, MessageQuery, NewChannel, NewInvite, NewThread, OverwriteTarget,
+    ChannelEdit, ChannelKind, MessageQuery, NewChannel, NewInvite, NewRole, NewThread,
+    OverwriteTarget, RoleEdit,
 };
 use crate::error::AppError;
 use crate::mcp::server::DiscordMcpServer;
@@ -350,6 +351,74 @@ pub struct DeleteInviteArgs {
     pub dry_run: Option<bool>,
 }
 
+/// Arguments for `discord_create_role`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateRoleArgs {
+    /// Discord guild (server) ID, digits only.
+    pub guild_id: String,
+    /// Role name, 1-100 characters.
+    pub name: String,
+    /// Guild permission names to grant, e.g. `VIEW_CHANNEL`. Defaults to none.
+    pub permissions: Option<Vec<String>>,
+    /// Primary color as 0xRRGGBB; 0 means no color.
+    pub color: Option<u32>,
+    /// Show the role separately in the member list. Defaults to false.
+    pub hoist: Option<bool>,
+    /// Let members mention the role. Defaults to false.
+    pub mentionable: Option<bool>,
+    /// Validate and report without creating anything. Off by default.
+    pub dry_run: Option<bool>,
+}
+
+/// Arguments for `discord_edit_role`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EditRoleArgs {
+    /// Discord guild (server) ID, digits only.
+    pub guild_id: String,
+    /// Discord role ID, digits only.
+    pub role_id: String,
+    /// New name, 1-100 characters.
+    pub name: Option<String>,
+    /// Replacement permission set. Sending this replaces every permission.
+    pub permissions: Option<Vec<String>>,
+    /// New primary color as 0xRRGGBB; 0 clears it.
+    pub color: Option<u32>,
+    /// New hoist setting.
+    pub hoist: Option<bool>,
+    /// New mentionable setting.
+    pub mentionable: Option<bool>,
+    /// Validate and report without changing anything. Off by default.
+    pub dry_run: Option<bool>,
+}
+
+/// Arguments for `discord_delete_role`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteRoleArgs {
+    /// Discord guild (server) ID, digits only.
+    pub guild_id: String,
+    /// Discord role ID, digits only.
+    pub role_id: String,
+    /// Validate and report without deleting anything. Off by default.
+    pub dry_run: Option<bool>,
+}
+
+/// Arguments for `discord_assign_role` and `discord_remove_role`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemberRoleArgs {
+    /// Discord guild (server) ID, digits only.
+    pub guild_id: String,
+    /// Discord user ID, digits only.
+    pub user_id: String,
+    /// Discord role ID, digits only.
+    pub role_id: String,
+    /// Validate and report without changing membership. Off by default.
+    pub dry_run: Option<bool>,
+}
+
 /// What a mutating tool returns.
 #[derive(Serialize)]
 struct MutationReport<T> {
@@ -456,6 +525,27 @@ fn parse_overwrite_target(id: &str, kind: &str) -> Result<OverwriteTarget, AppEr
             "`target_type` must be `role` or `member` (got `{other}`)"
         ))),
     }
+}
+
+/// Discord role colors are 24-bit RGB.
+fn check_color(color: Option<u32>) -> Result<Option<u32>, AppError> {
+    match color {
+        Some(value) if value > 0x00FF_FFFF => Err(AppError::invalid_argument(
+            "`color` must be between 0x000000 and 0xFFFFFF",
+        )),
+        _ => Ok(color),
+    }
+}
+
+/// `@everyone` is the guild's own ID; it exists and cannot be deleted or
+/// assigned, so those calls are refused before a request is built.
+fn reject_everyone_role(guild_id: GuildId, role_id: RoleId) -> Result<(), AppError> {
+    if guild_id.get() == role_id.get() {
+        return Err(AppError::invalid_argument(
+            "`role_id` names @everyone, which cannot be deleted or assigned",
+        ));
+    }
+    Ok(())
 }
 
 /// Discord accepts only four auto-archive delays.
@@ -1244,6 +1334,182 @@ impl DiscordMcpServer {
                 .delete_invite(&code, args.dry_run.unwrap_or(false))
                 .await?;
             Ok(mutation_report("discord_delete_invite", outcome))
+        })
+        .await)
+    }
+
+    #[tool(
+        name = "discord_create_role",
+        description = "Create a guild role with optional permissions, color and display flags. Needs policy.administrative_enabled and the guild allowlist; ADMINISTRATOR cannot be granted.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn discord_create_role(
+        &self,
+        Parameters(args): Parameters<CreateRoleArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(tool_call("discord_create_role", async {
+            let guild_id = GuildId::parse(&args.guild_id)?;
+            let name = require_name(&args.name, "name")?;
+            let permissions = crate::discord::permissions::resolve(
+                &args.permissions.unwrap_or_default(),
+                "permissions",
+                false,
+            )?;
+            let spec = NewRole {
+                name,
+                permissions,
+                color: check_color(args.color)?,
+                hoist: args.hoist.unwrap_or(false),
+                mentionable: args.mentionable.unwrap_or(false),
+            };
+            let outcome = self
+                .state()
+                .discord()
+                .create_role(&guild_id, &spec, args.dry_run.unwrap_or(false))
+                .await?;
+            Ok(mutation_report("discord_create_role", outcome))
+        })
+        .await)
+    }
+
+    #[tool(
+        name = "discord_edit_role",
+        description = "Change a role's name, permissions, color or display flags. `permissions` replaces the whole set. Needs policy.administrative_enabled and the guild allowlist.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn discord_edit_role(
+        &self,
+        Parameters(args): Parameters<EditRoleArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(tool_call("discord_edit_role", async {
+            let guild_id = GuildId::parse(&args.guild_id)?;
+            let role_id = RoleId::parse(&args.role_id)?;
+            if args.name.is_none()
+                && args.permissions.is_none()
+                && args.color.is_none()
+                && args.hoist.is_none()
+                && args.mentionable.is_none()
+            {
+                return Err(AppError::invalid_argument(
+                    "give at least one of `name`, `permissions`, `color`, `hoist` or `mentionable`",
+                ));
+            }
+            let spec = RoleEdit {
+                name: args
+                    .name
+                    .as_deref()
+                    .map(|name| require_name(name, "name"))
+                    .transpose()?,
+                permissions: args
+                    .permissions
+                    .map(|names| crate::discord::permissions::resolve(&names, "permissions", false))
+                    .transpose()?,
+                color: check_color(args.color)?,
+                hoist: args.hoist,
+                mentionable: args.mentionable,
+            };
+            let outcome = self
+                .state()
+                .discord()
+                .edit_role(&guild_id, &role_id, &spec, args.dry_run.unwrap_or(false))
+                .await?;
+            Ok(mutation_report("discord_edit_role", outcome))
+        })
+        .await)
+    }
+
+    #[tool(
+        name = "discord_delete_role",
+        description = "Delete a guild role. Irreversible. Needs policy.administrative_enabled and the guild allowlist.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn discord_delete_role(
+        &self,
+        Parameters(args): Parameters<DeleteRoleArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(tool_call("discord_delete_role", async {
+            let guild_id = GuildId::parse(&args.guild_id)?;
+            let role_id = RoleId::parse(&args.role_id)?;
+            reject_everyone_role(guild_id, role_id)?;
+            let outcome = self
+                .state()
+                .discord()
+                .delete_role(&guild_id, &role_id, args.dry_run.unwrap_or(false))
+                .await?;
+            Ok(mutation_report("discord_delete_role", outcome))
+        })
+        .await)
+    }
+
+    #[tool(
+        name = "discord_assign_role",
+        description = "Give a member a role. Needs policy.administrative_enabled and the guild allowlist.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn discord_assign_role(
+        &self,
+        Parameters(args): Parameters<MemberRoleArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(tool_call("discord_assign_role", async {
+            let guild_id = GuildId::parse(&args.guild_id)?;
+            let user_id = UserId::parse(&args.user_id)?;
+            let role_id = RoleId::parse(&args.role_id)?;
+            reject_everyone_role(guild_id, role_id)?;
+            let outcome = self
+                .state()
+                .discord()
+                .assign_role(&guild_id, &user_id, &role_id, args.dry_run.unwrap_or(false))
+                .await?;
+            Ok(mutation_report("discord_assign_role", outcome))
+        })
+        .await)
+    }
+
+    #[tool(
+        name = "discord_remove_role",
+        description = "Take a role away from a member. Needs policy.administrative_enabled and the guild allowlist.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn discord_remove_role(
+        &self,
+        Parameters(args): Parameters<MemberRoleArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(tool_call("discord_remove_role", async {
+            let guild_id = GuildId::parse(&args.guild_id)?;
+            let user_id = UserId::parse(&args.user_id)?;
+            let role_id = RoleId::parse(&args.role_id)?;
+            reject_everyone_role(guild_id, role_id)?;
+            let outcome = self
+                .state()
+                .discord()
+                .remove_role(&guild_id, &user_id, &role_id, args.dry_run.unwrap_or(false))
+                .await?;
+            Ok(mutation_report("discord_remove_role", outcome))
         })
         .await)
     }

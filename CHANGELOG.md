@@ -30,6 +30,12 @@ Notable changes to `discord-mcp`, grouped by capability rather than by commit â€
   created by a tool joins the allowlist only when an operator adds it. Invite
   revocation's audit record names the resolved channel, and the invite lookup is
   a policy-checked, audited read rather than an unchecked trait method.
+- **Roles (slice 3).** `discord_create_role`, `discord_edit_role`,
+  `discord_delete_role`, `discord_assign_role` and `discord_remove_role` under
+  `administrative_enabled`, the guild allowlist, the shared budget and `dry_run`.
+  Permissions are named, never raw bits, and `ADMINISTRATOR` cannot be granted;
+  editing a role's permissions replaces the whole set. `@everyone` is refused for
+  delete and assignment before a request is built.
 
 ## v0.1.0 â€” 2026-11-18
 

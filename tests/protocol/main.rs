@@ -386,17 +386,21 @@ fn tools_are_advertised_with_strict_schemas_and_honest_annotations() {
         names,
         vec![
             "discord_add_reaction",
+            "discord_assign_role",
             "discord_bulk_delete_messages",
             "discord_clear_reactions",
             "discord_create_channel",
             "discord_create_invite",
+            "discord_create_role",
             "discord_create_thread",
             "discord_delete_channel",
             "discord_delete_invite",
             "discord_delete_message",
             "discord_delete_permission_overwrite",
+            "discord_delete_role",
             "discord_edit_channel",
             "discord_edit_message",
+            "discord_edit_role",
             "discord_edit_thread",
             "discord_get_capabilities",
             "discord_get_channel",
@@ -409,6 +413,7 @@ fn tools_are_advertised_with_strict_schemas_and_honest_annotations() {
             "discord_list_members",
             "discord_pin_message",
             "discord_remove_reaction",
+            "discord_remove_role",
             "discord_send_message",
             "discord_set_permission_overwrite",
             "discord_unpin_message",
@@ -481,6 +486,67 @@ fn creating_a_channel_is_refused_when_control_tools_are_off() {
     let text = tool_error_text(response_with_id(&responses, 2));
     assert!(text.starts_with("POLICY_BLOCKED"), "got {text:?}");
     assert!(text.contains("control"), "got {text:?}");
+}
+
+#[test]
+fn role_creation_is_refused_when_administration_is_off() {
+    let frames = session(&tool_call(
+        2,
+        "discord_create_role",
+        r#"{"guild_id":"1","name":"mods"}"#,
+    ));
+    let responses = run_session(
+        "create-role-off",
+        "[policy]\nadministrative_enabled = false\n",
+        &frames,
+    );
+
+    let text = tool_error_text(response_with_id(&responses, 2));
+    assert!(text.starts_with("POLICY_BLOCKED"), "got {text:?}");
+    assert!(text.contains("administrative"), "got {text:?}");
+}
+
+#[test]
+fn a_role_cannot_grant_administrator() {
+    let frames = session(&tool_call(
+        2,
+        "discord_create_role",
+        r#"{"guild_id":"1","name":"mods","permissions":["ADMINISTRATOR"],"dry_run":true}"#,
+    ));
+    let responses = run_session(
+        "create-role-admin",
+        "[policy]\nadministrative_enabled = true\nguild_allowlist = [\"1\"]\n",
+        &frames,
+    );
+
+    let text = tool_error_text(response_with_id(&responses, 2));
+    assert!(text.starts_with("INVALID_ARGUMENT"), "got {text:?}");
+    assert!(text.contains("ADMINISTRATOR"), "got {text:?}");
+}
+
+#[test]
+fn a_dry_run_role_reports_the_plan_without_a_request() {
+    let frames = session(&tool_call(
+        2,
+        "discord_create_role",
+        r#"{"guild_id":"1","name":"mods","dry_run":true}"#,
+    ));
+    let responses = run_session(
+        "dry-run-role",
+        "[policy]\nadministrative_enabled = true\nguild_allowlist = [\"1\"]\n",
+        &frames,
+    );
+
+    let result = &response_with_id(&responses, 2)["result"];
+    assert_eq!(result["isError"], false, "{result}");
+    let text = result["content"][0]["text"]
+        .as_str()
+        .expect("a text result");
+    assert!(text.contains("\"dry_run\":true"), "got {text}");
+    assert!(
+        text.contains("discord_create_role"),
+        "the plan must name the tool: {text}"
+    );
 }
 
 #[test]

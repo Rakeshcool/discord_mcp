@@ -46,7 +46,7 @@ covers the threat model.
 | `policy.read_enabled = false` | Every read tool refuses with `POLICY_BLOCKED` |
 | `policy.write_enabled = false` (default) | `discord_send_message`, `discord_edit_message`, the reaction tools and the pin tools refuse with `POLICY_BLOCKED` |
 | `policy.control_enabled = false` (default) | `discord_delete_message` and every channel, permission, thread and invite tool refuse; enabling it requires a channel allowlist |
-| `policy.administrative_enabled = false` (default) | `discord_bulk_delete_messages` refuses; enabling it requires a guild allowlist |
+| `policy.administrative_enabled = false` (default) | `discord_bulk_delete_messages` and every role tool refuse; enabling it requires a guild allowlist |
 | `policy.autonomy.max_actions_per_minute` (default 30) | Shared budget across all mutations; the request past it is `POLICY_BLOCKED` and is never sent |
 | `policy.autonomy.max_bulk_delete` (default 50) | Ceiling for one `discord_bulk_delete_messages` call, on top of Discord's 100 and 14-day rules |
 | `policy.autonomy.require_dry_run` | Tools listed here refuse unless called with `dry_run: true`; a name that is not a classified tool is a configuration error, not a silent no-op |
@@ -336,7 +336,42 @@ code that points outside the allowlist is refused without a Discord mutation and
 without consuming budget. The audit record for a revocation names that resolved
 channel; only a refusal before resolution is recorded without a target.
 
-## 5. Resource
+## 5. Role control
+
+Roles are guild-wide configuration, so every tool here needs
+`policy.administrative_enabled = true`, its guild on `policy.guild_allowlist`, and
+an action from the shared budget; each accepts `dry_run`. Permission names resolve
+to Discord bits, and `ADMINISTRATOR` cannot be granted. Discord still enforces
+role hierarchy and refuses managed roles; a refusal surfaces as
+`PERMISSION_DENIED`.
+
+### `discord_create_role`
+
+`guild_id`, `name`, and optionally `permissions` (names such as `VIEW_CHANNEL`;
+defaults to none), `color` (`0xRRGGBB`; `0` means none), `hoist`, `mentionable`.
+
+### `discord_edit_role`
+
+`guild_id`, `role_id`, plus at least one of `name`, `permissions`, `color`,
+`hoist`, `mentionable`. `permissions` is a **replacement set**, not a diff:
+sending it drops every permission not listed. It is how a role is made
+administrator, so combine it with `dry_run` when the intent is not trivial.
+
+### `discord_delete_role`
+
+`guild_id`, `role_id`. Irreversible; members lose the role. `@everyone` is refused
+locally because Discord does not allow deleting it.
+
+### `discord_assign_role`
+
+`guild_id`, `user_id`, `role_id`. Idempotent: assigning a role the member already
+has is a no-op on Discord's side. `@everyone` cannot be assigned.
+
+### `discord_remove_role`
+
+`guild_id`, `user_id`, `role_id`. Idempotent. `@everyone` cannot be removed.
+
+## 6. Resource
 
 | URI | MIME type | Contents |
 |---|---|---|
@@ -348,7 +383,7 @@ prefer the tool.
 
 ---
 
-## 6. Error codes
+## 7. Error codes
 
 The text of a failed result is `CODE: message`. The code is stable; the message
 is not, and a client should branch on the code.
@@ -367,7 +402,7 @@ is not, and a client should branch on the code.
 | `CONFIGURATION_ERROR` | Configuration is missing, unparsable or inconsistent | No — fix the config |
 | `INTERNAL_ERROR` | A local bug or unexpected failure; details are in the redacted logs | No |
 
-## 7. Retries, rate limits and timeouts
+## 8. Retries, rate limits and timeouts
 
 - **Reads** retry only transport-level failures — a request that never completed,
   a transport timeout, a `5xx` — with jittered backoff, at most
@@ -390,9 +425,9 @@ is not, and a client should branch on the code.
   audit records of the Discord requests it makes. Set `RUST_LOG=debug` to see the
   `mcp.tool` and `discord.call` spans.
 
-## 8. What this surface does not do
+## 9. What this surface does not do
 
-- No role, member, webhook or emoji management yet; those are the next packs.
+- No member, webhook or emoji management yet; those are the next packs.
 - No gateway connection, event stream or scheduled job: every read is
   request/response.
 - No search endpoint; results carry no embeds, reactions or attachments.

@@ -69,7 +69,12 @@ pub fn classify_tool(name: &str) -> Option<ToolRisk> {
         | "discord_edit_thread"
         | "discord_create_invite"
         | "discord_delete_invite" => Some(ToolRisk::Destructive),
-        "discord_bulk_delete_messages" => Some(ToolRisk::Administrative),
+        "discord_bulk_delete_messages"
+        | "discord_create_role"
+        | "discord_edit_role"
+        | "discord_delete_role"
+        | "discord_assign_role"
+        | "discord_remove_role" => Some(ToolRisk::Administrative),
         _ => None,
     }
 }

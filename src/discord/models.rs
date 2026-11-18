@@ -8,6 +8,7 @@
 use serde::Serialize;
 
 use crate::discord::ids::{ChannelId, GuildId, MessageId, RoleId, UserId};
+use crate::discord::permissions::PermissionBits;
 
 /// The bot account this server authenticates as.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -291,6 +292,57 @@ pub struct InviteSummary {
     pub max_uses: Option<u16>,
     /// Uses so far, when reported.
     pub uses: Option<u16>,
+}
+
+/// A role to create.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewRole {
+    /// Role name.
+    pub name: String,
+    /// Guild-wide permission bits.
+    pub permissions: PermissionBits,
+    /// Primary color, when set.
+    pub color: Option<u32>,
+    /// Whether the role is shown separately in the member list.
+    pub hoist: bool,
+    /// Whether members may mention the role.
+    pub mentionable: bool,
+}
+
+/// Fields to change on a role.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RoleEdit {
+    /// New name.
+    pub name: Option<String>,
+    /// Replacement permission set; the whole set, not a diff.
+    pub permissions: Option<PermissionBits>,
+    /// New primary color.
+    pub color: Option<u32>,
+    /// New hoist setting.
+    pub hoist: Option<bool>,
+    /// New mentionable setting.
+    pub mentionable: Option<bool>,
+}
+
+/// One role.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RoleSummary {
+    /// Role ID.
+    pub id: RoleId,
+    /// Role name.
+    pub name: String,
+    /// Primary color, `0` meaning none.
+    pub color: u32,
+    /// Whether the role is hoisted in the member list.
+    pub hoist: bool,
+    /// Whether members may mention the role.
+    pub mentionable: bool,
+    /// Whether Discord manages the role for an integration or bot.
+    pub managed: bool,
+    /// Position in the role hierarchy.
+    pub position: i64,
+    /// Guild-wide permission bits.
+    pub permissions: u64,
 }
 
 /// One bounded page of results.

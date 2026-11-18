@@ -13,11 +13,11 @@
 
 use async_trait::async_trait;
 
-use crate::discord::ids::{ChannelId, GuildId, MessageId, UserId};
+use crate::discord::ids::{ChannelId, GuildId, MessageId, RoleId, UserId};
 use crate::discord::models::{
     BotIdentity, ChannelEdit, ChannelSummary, GuildDetail, GuildSummary, InviteSummary,
-    MemberSummary, MessageQuery, MessageSummary, NewChannel, NewInvite, NewThread, OverwriteTarget,
-    Page,
+    MemberSummary, MessageQuery, MessageSummary, NewChannel, NewInvite, NewRole, NewThread,
+    OverwriteTarget, Page, RoleEdit, RoleSummary,
 };
 use crate::discord::permissions::PermissionBits;
 use crate::error::AppError;
@@ -248,4 +248,47 @@ pub trait DiscordApi: Send + Sync + std::fmt::Debug {
 
     /// Look an invite up, so policy can find the channel it belongs to.
     async fn get_invite(&self, code: &str) -> Result<InviteSummary, AppError>;
+
+    /// Create a guild role.
+    async fn create_role(
+        &self,
+        guild_id: &GuildId,
+        spec: &NewRole,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<RoleSummary>, AppError>;
+
+    /// Change a role's name, permissions, color or display flags.
+    async fn edit_role(
+        &self,
+        guild_id: &GuildId,
+        role_id: &RoleId,
+        spec: &RoleEdit,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<RoleSummary>, AppError>;
+
+    /// Delete a role.
+    async fn delete_role(
+        &self,
+        guild_id: &GuildId,
+        role_id: &RoleId,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError>;
+
+    /// Give a member a role.
+    async fn assign_role(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        role_id: &RoleId,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError>;
+
+    /// Take a role away from a member.
+    async fn remove_role(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        role_id: &RoleId,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError>;
 }

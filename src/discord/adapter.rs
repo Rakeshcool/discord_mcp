@@ -27,10 +27,12 @@ use twilight_model::channel::message::Message;
 use twilight_model::channel::thread::AutoArchiveDuration;
 use twilight_model::channel::{Channel, ChannelType};
 use twilight_model::guild::invite::Invite;
-use twilight_model::guild::{Guild, Member, Permissions};
+use twilight_model::guild::{Guild, Member, Permissions, Role};
 use twilight_model::http::permission_overwrite::{PermissionOverwrite, PermissionOverwriteType};
 use twilight_model::id::Id;
-use twilight_model::id::marker::{ChannelMarker, GuildMarker, MessageMarker, UserMarker};
+use twilight_model::id::marker::{
+    ChannelMarker, GuildMarker, MessageMarker, RoleMarker, UserMarker,
+};
 use twilight_model::user::{CurrentUser, CurrentUserGuild};
 
 use crate::config::schema::{DiscordConfig, is_loopback_host};
@@ -38,11 +40,11 @@ use crate::discord::client::{
     DiscordApi, GUILDS_PAGE_MAX, MEMBERS_PAGE_MAX, MESSAGES_PAGE_MAX, MutationOutcome,
 };
 use crate::discord::errors::{map_discord_error, read_body_error};
-use crate::discord::ids::{ChannelId, GuildId, MessageId, UserId};
+use crate::discord::ids::{ChannelId, GuildId, MessageId, RoleId, UserId};
 use crate::discord::models::{
     BotIdentity, ChannelEdit, ChannelKind, ChannelSummary, GuildDetail, GuildSummary,
     InviteSummary, MemberSummary, MessageAuthor, MessageQuery, MessageSummary, NewChannel,
-    NewInvite, NewThread, OverwriteTarget, Page,
+    NewInvite, NewRole, NewThread, OverwriteTarget, Page, RoleEdit, RoleSummary,
 };
 use crate::discord::permissions::PermissionBits;
 use crate::discord::rate_limit::{backoff, is_transient};
@@ -811,11 +813,123 @@ impl DiscordApi for TwilightDiscord {
 
     async fn get_invite(&self, code: &str) -> Result<InviteSummary, AppError> {
         let invite: Invite = self
-            .send("discord_delete_invite", || {
+            .send("discord_resolve_invite", || {
                 read_one(IntoFuture::into_future(self.client.invite(code)))
             })
             .await?;
         Ok(invite_summary(invite))
+    }
+
+    async fn create_role(
+        &self,
+        guild_id: &GuildId,
+        spec: &NewRole,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<RoleSummary>, AppError> {
+        let role: Role = self
+            .send_once("discord_create_role", || {
+                let mut request = self
+                    .client
+                    .create_role(Id::new(guild_id.get()))
+                    .name(&spec.name)
+                    .permissions(Permissions::from_bits_truncate(spec.permissions.bits()))
+                    .hoist(spec.hoist)
+                    .mentionable(spec.mentionable);
+                if let Some(color) = spec.color {
+                    request = request.color(color);
+                }
+                read_one(IntoFuture::into_future(request))
+            })
+            .await?;
+        Ok(MutationOutcome::Applied(role_summary(role)))
+    }
+
+    async fn edit_role(
+        &self,
+        guild_id: &GuildId,
+        role_id: &RoleId,
+        spec: &RoleEdit,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<RoleSummary>, AppError> {
+        let role: Role = self
+            .send_once("discord_edit_role", || {
+                let mut request = self
+                    .client
+                    .update_role(Id::new(guild_id.get()), Id::new(role_id.get()));
+                if let Some(name) = &spec.name {
+                    request = request.name(Some(name));
+                }
+                if let Some(permissions) = spec.permissions {
+                    request =
+                        request.permissions(Permissions::from_bits_truncate(permissions.bits()));
+                }
+                if let Some(color) = spec.color {
+                    request = request.color(Some(color));
+                }
+                if let Some(hoist) = spec.hoist {
+                    request = request.hoist(hoist);
+                }
+                if let Some(mentionable) = spec.mentionable {
+                    request = request.mentionable(mentionable);
+                }
+                read_one(IntoFuture::into_future(request))
+            })
+            .await?;
+        Ok(MutationOutcome::Applied(role_summary(role)))
+    }
+
+    async fn delete_role(
+        &self,
+        guild_id: &GuildId,
+        role_id: &RoleId,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.send_once("discord_delete_role", || {
+            read_empty(IntoFuture::into_future(
+                self.client
+                    .delete_role(Id::new(guild_id.get()), Id::new(role_id.get())),
+            ))
+        })
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn assign_role(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        role_id: &RoleId,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.send_once("discord_assign_role", || {
+            read_empty(IntoFuture::into_future(self.client.add_guild_member_role(
+                Id::new(guild_id.get()),
+                Id::new(user_id.get()),
+                Id::new(role_id.get()),
+            )))
+        })
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn remove_role(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        role_id: &RoleId,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.send_once("discord_remove_role", || {
+            read_empty(IntoFuture::into_future(
+                self.client.remove_guild_member_role(
+                    Id::new(guild_id.get()),
+                    Id::new(user_id.get()),
+                    Id::new(role_id.get()),
+                ),
+            ))
+        })
+        .await?;
+        Ok(MutationOutcome::Applied(()))
     }
 }
 
@@ -937,6 +1051,10 @@ fn user_id(id: Id<UserMarker>) -> UserId {
     UserId::from_u64(id.get())
 }
 
+fn role_id(id: Id<RoleMarker>) -> RoleId {
+    RoleId::from_u64(id.get())
+}
+
 fn channel_kind(kind: ChannelType) -> ChannelKind {
     // twilight's numeric channel type is Discord's, so `from_code` covers every
     // variant, named or unknown.
@@ -972,6 +1090,19 @@ fn message_summary(message: Message) -> MessageSummary {
             .edited_timestamp
             .map(|value| value.iso_8601().to_string()),
         attachment_count: message.attachments.len(),
+    }
+}
+
+fn role_summary(role: Role) -> RoleSummary {
+    RoleSummary {
+        id: role_id(role.id),
+        name: role.name,
+        color: role.colors.primary_color,
+        hoist: role.hoist,
+        mentionable: role.mentionable,
+        managed: role.managed,
+        position: role.position,
+        permissions: role.permissions.bits(),
     }
 }
 

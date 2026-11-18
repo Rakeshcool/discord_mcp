@@ -12,9 +12,10 @@ use discord_mcp::config::schema::DiscordConfig;
 use discord_mcp::discord::DiscordApi;
 use discord_mcp::discord::adapter::TwilightDiscord;
 use discord_mcp::discord::client::{MEMBERS_PAGE_MAX, MutationOutcome};
-use discord_mcp::discord::ids::{ChannelId, GuildId, MessageId, RoleId};
+use discord_mcp::discord::ids::{ChannelId, GuildId, MessageId, RoleId, UserId};
 use discord_mcp::discord::models::{
-    ChannelEdit, ChannelKind, MessageQuery, NewChannel, NewInvite, NewThread, OverwriteTarget,
+    ChannelEdit, ChannelKind, MessageQuery, NewChannel, NewInvite, NewRole, NewThread,
+    OverwriteTarget, RoleEdit,
 };
 use discord_mcp::discord::permissions::{PermissionBits, resolve};
 use discord_mcp::error::ErrorCategory;
@@ -68,6 +69,13 @@ fn guild_detail() -> &'static str {
 fn channel_detail() -> &'static str {
     r#"{"id":"4004","type":2,"guild_id":"2002","name":"general","topic":"hello",
         "position":3,"parent_id":"5005","nsfw":false,"permission_overwrites":[]}"#
+}
+
+fn role() -> &'static str {
+    r#"{"id":"7007","name":"mods","color":0,
+        "colors":{"primary_color":16711680,"secondary_color":null,"tertiary_color":null},
+        "hoist":true,"position":2,"permissions":"1024","managed":false,
+        "mentionable":true,"flags":0}"#
 }
 
 fn message(id: &str, content: &str) -> String {
@@ -982,6 +990,151 @@ async fn create_invite_sends_its_limits_and_maps_the_code() {
         }
         MutationOutcome::Planned => panic!("a real call cannot be planned"),
     }
+}
+
+#[tokio::test]
+async fn create_role_posts_its_flags_permissions_and_color() {
+    let mock = MockDiscord::start(|request| {
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.route(), "/api/v10/guilds/2002/roles");
+        let body = request.json();
+        assert_eq!(body["name"], "mods");
+        assert!(body["permissions"].to_string().contains("1024"));
+        assert_eq!(body["color"], 16711680);
+        assert_eq!(body["hoist"], true);
+        assert_eq!(body["mentionable"], true);
+        MockResponse::json(role())
+    })
+    .await;
+    let api = adapter_for(&mock);
+    let spec = NewRole {
+        name: "mods".to_string(),
+        permissions: resolve(&["VIEW_CHANNEL".to_string()], "permissions", false)
+            .expect("known name"),
+        color: Some(16_711_680),
+        hoist: true,
+        mentionable: true,
+    };
+
+    let outcome = api
+        .create_role(
+            &GuildId::parse(GUILD_ID).expect("valid guild id"),
+            &spec,
+            false,
+        )
+        .await
+        .expect("the role must be created");
+
+    match outcome {
+        MutationOutcome::Applied(created) => {
+            assert_eq!(created.id, RoleId::parse("7007").expect("valid role id"));
+            assert_eq!(created.color, 16_711_680);
+            assert_eq!(created.permissions, 1 << 10);
+            assert!(created.hoist && created.mentionable);
+        }
+        MutationOutcome::Planned => panic!("a real call cannot be planned"),
+    }
+}
+
+#[tokio::test]
+async fn edit_role_patches_only_the_fields_given() {
+    let mock = MockDiscord::start(|request| {
+        assert_eq!(request.method, "PATCH");
+        assert_eq!(request.route(), "/api/v10/guilds/2002/roles/7007");
+        let body = request.json();
+        assert_eq!(body["name"], "renamed");
+        assert_eq!(body["hoist"], true);
+        assert!(
+            body["permissions"].is_null(),
+            "an unset field must stay unset"
+        );
+        MockResponse::json(role())
+    })
+    .await;
+    let api = adapter_for(&mock);
+    let spec = RoleEdit {
+        name: Some("renamed".to_string()),
+        hoist: Some(true),
+        ..RoleEdit::default()
+    };
+
+    api.edit_role(
+        &GuildId::parse(GUILD_ID).expect("valid guild id"),
+        &RoleId::parse("7007").expect("valid role id"),
+        &spec,
+        false,
+    )
+    .await
+    .expect("the role must be edited");
+}
+
+#[tokio::test]
+async fn delete_role_sends_one_delete() {
+    let mock = MockDiscord::start(|request| {
+        assert_eq!(request.method, "DELETE");
+        assert_eq!(request.route(), "/api/v10/guilds/2002/roles/7007");
+        MockResponse::json("").status(204)
+    })
+    .await;
+    let api = adapter_for(&mock);
+
+    let outcome = api
+        .delete_role(
+            &GuildId::parse(GUILD_ID).expect("valid guild id"),
+            &RoleId::parse("7007").expect("valid role id"),
+            false,
+        )
+        .await
+        .expect("the role must be deleted");
+
+    assert_eq!(outcome, MutationOutcome::Applied(()));
+    assert_eq!(mock.request_count(), 1);
+}
+
+#[tokio::test]
+async fn assign_role_puts_the_member_role_route() {
+    let mock = MockDiscord::start(|request| {
+        assert_eq!(request.method, "PUT");
+        assert_eq!(
+            request.route(),
+            "/api/v10/guilds/2002/members/9009/roles/7007"
+        );
+        MockResponse::json("").status(204)
+    })
+    .await;
+    let api = adapter_for(&mock);
+
+    api.assign_role(
+        &GuildId::parse(GUILD_ID).expect("valid guild id"),
+        &UserId::parse("9009").expect("valid user id"),
+        &RoleId::parse("7007").expect("valid role id"),
+        false,
+    )
+    .await
+    .expect("the role must be assigned");
+}
+
+#[tokio::test]
+async fn remove_role_deletes_the_member_role_route() {
+    let mock = MockDiscord::start(|request| {
+        assert_eq!(request.method, "DELETE");
+        assert_eq!(
+            request.route(),
+            "/api/v10/guilds/2002/members/9009/roles/7007"
+        );
+        MockResponse::json("").status(204)
+    })
+    .await;
+    let api = adapter_for(&mock);
+
+    api.remove_role(
+        &GuildId::parse(GUILD_ID).expect("valid guild id"),
+        &UserId::parse("9009").expect("valid user id"),
+        &RoleId::parse("7007").expect("valid role id"),
+        false,
+    )
+    .await
+    .expect("the role must be removed");
 }
 
 #[tokio::test]
