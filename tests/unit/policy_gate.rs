@@ -13,11 +13,11 @@ use tokio::sync::Semaphore;
 use discord_mcp::config::schema::{AutonomyConfig, PolicyConfig};
 use discord_mcp::discord::DiscordApi;
 use discord_mcp::discord::client::MutationOutcome;
-use discord_mcp::discord::ids::{ChannelId, GuildId, MessageId, UserId};
+use discord_mcp::discord::ids::{ChannelId, GuildId, MessageId, RoleId, UserId};
 use discord_mcp::discord::models::{
     BotIdentity, ChannelEdit, ChannelKind, ChannelSummary, GuildDetail, GuildSummary,
     InviteSummary, MemberSummary, MessageAuthor, MessageQuery, MessageSummary, NewChannel,
-    NewInvite, NewThread, OverwriteTarget, Page,
+    NewInvite, NewRole, NewThread, OverwriteTarget, Page, RoleEdit, RoleSummary,
 };
 use discord_mcp::discord::permissions::PermissionBits;
 use discord_mcp::error::{AppError, ErrorCategory};
@@ -54,6 +54,11 @@ enum Call {
     CreateInvite(u64),
     DeleteInvite(String),
     GetInvite(String),
+    CreateRole(u64),
+    EditRole(u64, u64),
+    DeleteRole(u64, u64),
+    AssignRole(u64, u64, u64),
+    RemoveRole(u64, u64, u64),
     BotIdentity,
 }
 
@@ -189,6 +194,19 @@ fn message_summary(id: u64) -> MessageSummary {
         timestamp: "2024-01-01T00:00:00.000000+00:00".to_string(),
         edited_timestamp: None,
         attachment_count: 0,
+    }
+}
+
+fn role_summary(id: u64) -> RoleSummary {
+    RoleSummary {
+        id: RoleId::from_u64(id),
+        name: format!("role-{id}"),
+        color: 0,
+        hoist: false,
+        mentionable: false,
+        managed: false,
+        position: 1,
+        permissions: 0,
     }
 }
 
@@ -519,6 +537,71 @@ impl DiscordApi for FakeDiscord {
         _dry_run: bool,
     ) -> Result<MutationOutcome<()>, AppError> {
         self.record(Call::DeleteInvite(code.to_string())).await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn create_role(
+        &self,
+        guild_id: &GuildId,
+        _spec: &NewRole,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<RoleSummary>, AppError> {
+        self.record(Call::CreateRole(guild_id.get())).await?;
+        Ok(MutationOutcome::Applied(role_summary(50)))
+    }
+
+    async fn edit_role(
+        &self,
+        guild_id: &GuildId,
+        role_id: &RoleId,
+        _spec: &RoleEdit,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<RoleSummary>, AppError> {
+        self.record(Call::EditRole(guild_id.get(), role_id.get()))
+            .await?;
+        Ok(MutationOutcome::Applied(role_summary(role_id.get())))
+    }
+
+    async fn delete_role(
+        &self,
+        guild_id: &GuildId,
+        role_id: &RoleId,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.record(Call::DeleteRole(guild_id.get(), role_id.get()))
+            .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn assign_role(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        role_id: &RoleId,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.record(Call::AssignRole(
+            guild_id.get(),
+            user_id.get(),
+            role_id.get(),
+        ))
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn remove_role(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        role_id: &RoleId,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.record(Call::RemoveRole(
+            guild_id.get(),
+            user_id.get(),
+            role_id.get(),
+        ))
+        .await?;
         Ok(MutationOutcome::Applied(()))
     }
 
@@ -1374,6 +1457,24 @@ fn new_thread_spec() -> NewThread {
     }
 }
 
+fn administration_config() -> PolicyConfig {
+    PolicyConfig {
+        administrative_enabled: true,
+        guild_allowlist: vec!["1".to_string()],
+        ..PolicyConfig::default()
+    }
+}
+
+fn new_role_spec() -> NewRole {
+    NewRole {
+        name: "mods".to_string(),
+        permissions: PermissionBits::default(),
+        color: None,
+        hoist: false,
+        mentionable: false,
+    }
+}
+
 fn new_invite_spec() -> NewInvite {
     NewInvite {
         max_age_seconds: 3_600,
@@ -1741,6 +1842,133 @@ async fn structural_changes_share_the_action_budget() {
         "got {error}"
     );
     assert_eq!(fake.calls(), vec![Call::CreateInvite(4)]);
+}
+
+#[tokio::test]
+async fn role_changes_are_refused_until_administration_is_enabled() {
+    let fake = Arc::new(FakeDiscord::new());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(PolicyConfig::default()),
+        Arc::new(RecordingAudit::default()),
+    );
+    let guild_id = guild(1);
+    let role = RoleId::from_u64(7);
+    let user = UserId::from_u64(9);
+
+    let errors = [
+        gated
+            .create_role(&guild_id, &new_role_spec(), false)
+            .await
+            .expect_err("create_role"),
+        gated
+            .edit_role(
+                &guild_id,
+                &role,
+                &RoleEdit {
+                    name: Some("renamed".to_string()),
+                    ..RoleEdit::default()
+                },
+                false,
+            )
+            .await
+            .expect_err("edit_role"),
+        gated
+            .delete_role(&guild_id, &role, false)
+            .await
+            .expect_err("delete_role"),
+        gated
+            .assign_role(&guild_id, &user, &role, false)
+            .await
+            .expect_err("assign_role"),
+        gated
+            .remove_role(&guild_id, &user, &role, false)
+            .await
+            .expect_err("remove_role"),
+    ];
+
+    for error in errors {
+        assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+    }
+    assert!(
+        fake.calls().is_empty(),
+        "administration is off, so nothing may reach Discord: {:?}",
+        fake.calls()
+    );
+}
+
+#[tokio::test]
+async fn role_changes_obey_the_guild_allowlist() {
+    let fake = Arc::new(FakeDiscord::new());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(administration_config()),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    let error = gated
+        .create_role(&guild(2), &new_role_spec(), false)
+        .await
+        .expect_err("guild 2 is not allowlisted");
+
+    assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+    assert!(fake.calls().is_empty());
+}
+
+#[tokio::test]
+async fn role_dry_runs_plan_without_any_request() {
+    let fake = Arc::new(FakeDiscord::new());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(administration_config()),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    let created = gated
+        .create_role(&guild(1), &new_role_spec(), true)
+        .await
+        .expect("a dry run is a policy decision");
+    let assigned = gated
+        .assign_role(&guild(1), &UserId::from_u64(9), &RoleId::from_u64(7), true)
+        .await
+        .expect("a dry run is a policy decision");
+
+    assert_eq!(created, MutationOutcome::Planned);
+    assert_eq!(assigned, MutationOutcome::Planned);
+    assert!(fake.calls().is_empty(), "a dry run sends nothing");
+}
+
+#[tokio::test]
+async fn role_changes_share_the_action_budget() {
+    let fake = Arc::new(FakeDiscord::new());
+    let config = PolicyConfig {
+        autonomy: AutonomyConfig {
+            max_actions_per_minute: 1,
+            ..AutonomyConfig::default()
+        },
+        ..administration_config()
+    };
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(config),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    gated
+        .create_role(&guild(1), &new_role_spec(), false)
+        .await
+        .expect("the first action is within budget");
+    let error = gated
+        .assign_role(&guild(1), &UserId::from_u64(9), &RoleId::from_u64(7), false)
+        .await
+        .expect_err("the budget is shared across role tools");
+
+    assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+    assert!(
+        error.message().contains("max_actions_per_minute"),
+        "got {error}"
+    );
+    assert_eq!(fake.calls(), vec![Call::CreateRole(1)]);
 }
 
 fn snowflake_at(millis: u64) -> MessageId {

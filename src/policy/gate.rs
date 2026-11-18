@@ -25,11 +25,11 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::Instrument;
 
 use crate::discord::client::{DiscordApi, MutationOutcome};
-use crate::discord::ids::{ChannelId, GuildId, MessageId, UserId};
+use crate::discord::ids::{ChannelId, GuildId, MessageId, RoleId, UserId};
 use crate::discord::models::{
     BotIdentity, ChannelEdit, ChannelSummary, GuildDetail, GuildSummary, InviteSummary,
-    MemberSummary, MessageQuery, MessageSummary, NewChannel, NewInvite, NewThread, OverwriteTarget,
-    Page,
+    MemberSummary, MessageQuery, MessageSummary, NewChannel, NewInvite, NewRole, NewThread,
+    OverwriteTarget, Page, RoleEdit, RoleSummary,
 };
 use crate::discord::permissions::PermissionBits;
 use crate::error::{AppError, ErrorCategory};
@@ -799,9 +799,107 @@ impl DiscordApi for PolicyGate {
         })
         .await
     }
+
+    async fn create_role(
+        &self,
+        guild_id: &GuildId,
+        spec: &NewRole,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<RoleSummary>, AppError> {
+        self.guild_mutation("discord_create_role", guild_id, dry_run, async move {
+            let outcome = self.inner.create_role(guild_id, spec, false).await?;
+            applied(outcome)
+        })
+        .await
+    }
+
+    async fn edit_role(
+        &self,
+        guild_id: &GuildId,
+        role_id: &RoleId,
+        spec: &RoleEdit,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<RoleSummary>, AppError> {
+        self.guild_mutation("discord_edit_role", guild_id, dry_run, async move {
+            let outcome = self.inner.edit_role(guild_id, role_id, spec, false).await?;
+            applied(outcome)
+        })
+        .await
+    }
+
+    async fn delete_role(
+        &self,
+        guild_id: &GuildId,
+        role_id: &RoleId,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.guild_mutation("discord_delete_role", guild_id, dry_run, async move {
+            let outcome = self.inner.delete_role(guild_id, role_id, false).await?;
+            applied(outcome)
+        })
+        .await
+    }
+
+    async fn assign_role(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        role_id: &RoleId,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.guild_mutation("discord_assign_role", guild_id, dry_run, async move {
+            let outcome = self
+                .inner
+                .assign_role(guild_id, user_id, role_id, false)
+                .await?;
+            applied(outcome)
+        })
+        .await
+    }
+
+    async fn remove_role(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        role_id: &RoleId,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.guild_mutation("discord_remove_role", guild_id, dry_run, async move {
+            let outcome = self
+                .inner
+                .remove_role(guild_id, user_id, role_id, false)
+                .await?;
+            applied(outcome)
+        })
+        .await
+    }
 }
 
 impl PolicyGate {
+    /// Guild-scoped mutations share one preamble: the administrative flag, the
+    /// guild allowlist, the budget and the dry-run decision.
+    async fn guild_mutation<T>(
+        &self,
+        action: &'static str,
+        guild_id: &GuildId,
+        dry_run: bool,
+        body: impl Future<Output = Result<T, AppError>>,
+    ) -> Result<MutationOutcome<T>, AppError> {
+        let target = AuditTarget::for_guild(*guild_id);
+        self.policy
+            .check_tool(action)
+            .inspect_err(|error| self.record_refusal(action, target, error))?;
+        self.policy
+            .check_guild(guild_id)
+            .inspect_err(|error| self.record_refusal(action, target, error))?;
+
+        self.run_mutation(action, target, dry_run, async {
+            let _permit = self.permit().await?;
+            body.await
+        })
+        .await
+    }
+
     /// Resolve a thread's scope through its parent channel.
     async fn authorize_thread(&self, thread_id: &ChannelId) -> Result<(), AppError> {
         if self.policy.allows_channel(thread_id) {
