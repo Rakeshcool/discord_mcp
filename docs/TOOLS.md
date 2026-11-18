@@ -45,7 +45,7 @@ covers the threat model.
 |---|---|
 | `policy.read_enabled = false` | Every read tool refuses with `POLICY_BLOCKED` |
 | `policy.write_enabled = false` (default) | `discord_send_message`, `discord_edit_message`, the reaction tools and the pin tools refuse with `POLICY_BLOCKED` |
-| `policy.control_enabled = false` (default) | `discord_delete_message` refuses; enabling it requires a channel allowlist |
+| `policy.control_enabled = false` (default) | `discord_delete_message` and every channel, permission, thread and invite tool refuse; enabling it requires a channel allowlist |
 | `policy.administrative_enabled = false` (default) | `discord_bulk_delete_messages` refuses; enabling it requires a guild allowlist |
 | `policy.autonomy.max_actions_per_minute` (default 30) | Shared budget across all mutations; the request past it is `POLICY_BLOCKED` and is never sent |
 | `policy.autonomy.max_bulk_delete` (default 50) | Ceiling for one `discord_bulk_delete_messages` call, on top of Discord's 100 and 14-day rules |
@@ -266,7 +266,74 @@ What applies to every attempt:
 
 ---
 
-## 4. Resource
+## 4. Channel, thread and invite control
+
+These tools change server structure. Every one of them needs
+`policy.control_enabled = true`, its channel on `policy.channel_allowlist`, and an
+action from the shared per-minute budget; each accepts `dry_run`. Deleting a
+channel takes its messages with it, so `discord_delete_channel` is the one
+operation here that cannot be undone from Discord's UI.
+
+A channel created by these tools is **not** added to the allowlist. Operating on
+it afterwards needs an operator to add its ID, which is deliberate: the allowlist
+is the human boundary, and no tool may widen it.
+
+### `discord_create_channel`
+
+`guild_id`, `name`, and optionally `kind` (`text`, `voice`, `category`,
+`announcement`, `forum`, `stage`; default `text`), `parent_id`, `topic`, `nsfw`,
+`position`. The guild must be allowlisted, and a `parent_id` must itself be an
+allowed channel, so a category outside scope is not a foothold.
+
+### `discord_edit_channel`
+
+`channel_id` plus at least one of `name`, `topic`, `nsfw`, `slowmode_seconds`
+(0–21600). Position changes are not exposed: they reorder every channel in the
+guild, which is a different risk from a rename.
+
+### `discord_delete_channel`
+
+`channel_id`. Deletes the channel and every message in it. Irreversible.
+
+### `discord_set_permission_overwrite`
+
+`channel_id`, `target_id`, `target_type` (`role` or `member`), and `allow` /
+`deny` lists of Discord permission names such as `VIEW_CHANNEL` or
+`SEND_MESSAGES`. `ADMINISTRATOR` cannot appear in `allow`: an overwrite must not
+escalate privileges. An overwrite replaces the target's whole rule for that
+channel, so an omitted list is sent as empty rather than "keep what is there".
+
+### `discord_delete_permission_overwrite`
+
+`channel_id`, `target_id`, `target_type`. Removes the target's overwrite, so the
+channel falls back to its category and guild rules.
+
+### `discord_create_thread`
+
+`channel_id`, `name`, and optionally `from_message_id` (start from an existing
+message), `private` (standalone threads only; a message thread follows its
+message), `auto_archive_minutes` (60, 1440, 4320 or 10080). The parent channel
+must be allowed.
+
+### `discord_edit_thread`
+
+`thread_id` plus `archived` and/or `locked`. The thread itself is rarely on the
+allowlist — it did not exist when the list was written — so policy resolves its
+parent channel and checks that instead.
+
+### `discord_create_invite`
+
+`channel_id`, and optionally `max_age_seconds` (0–604800; default 86400, 0 means
+never), `max_uses` (0–100; 0 means unlimited), `temporary`, `unique`. The returned
+invite code is a credential for the guild: treat it as one.
+
+### `discord_delete_invite`
+
+`code`. Policy resolves the invite's channel before spending an action, so a
+code that points outside the allowlist is refused without a Discord mutation and
+without consuming budget.
+
+## 5. Resource
 
 | URI | MIME type | Contents |
 |---|---|---|
@@ -278,7 +345,7 @@ prefer the tool.
 
 ---
 
-## 5. Error codes
+## 6. Error codes
 
 The text of a failed result is `CODE: message`. The code is stable; the message
 is not, and a client should branch on the code.
@@ -297,7 +364,7 @@ is not, and a client should branch on the code.
 | `CONFIGURATION_ERROR` | Configuration is missing, unparsable or inconsistent | No — fix the config |
 | `INTERNAL_ERROR` | A local bug or unexpected failure; details are in the redacted logs | No |
 
-## 6. Retries, rate limits and timeouts
+## 7. Retries, rate limits and timeouts
 
 - **Reads** retry only transport-level failures — a request that never completed,
   a transport timeout, a `5xx` — with jittered backoff, at most
@@ -320,10 +387,9 @@ is not, and a client should branch on the code.
   audit records of the Discord requests it makes. Set `RUST_LOG=debug` to see the
   `mcp.tool` and `discord.call` spans.
 
-## 7. What this surface does not do
+## 8. What this surface does not do
 
-- No thread, channel, role, member, invite, webhook or emoji tool yet; those are
-  the next packs. Message mutations exist, but no tool edits server structure.
+- No role, member, webhook or emoji management yet; those are the next packs.
 - No gateway connection, event stream or scheduled job: every read is
   request/response.
 - No search endpoint; results carry no embeds, reactions or attachments.

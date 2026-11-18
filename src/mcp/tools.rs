@@ -28,8 +28,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::discord::client::GUILDS_PAGE_MAX;
-use crate::discord::ids::{ChannelId, GuildId, MessageId, UserId};
-use crate::discord::models::MessageQuery;
+use crate::discord::ids::{ChannelId, GuildId, MessageId, RoleId, UserId};
+use crate::discord::models::{
+    ChannelEdit, ChannelKind, MessageQuery, NewChannel, NewInvite, NewThread, OverwriteTarget,
+};
 use crate::error::AppError;
 use crate::mcp::server::DiscordMcpServer;
 
@@ -208,6 +210,148 @@ pub struct PinArgs {
     pub dry_run: Option<bool>,
 }
 
+/// Arguments for `discord_create_channel`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateChannelArgs {
+    /// Discord guild (server) ID, digits only.
+    pub guild_id: String,
+    /// Channel name, 1-100 characters.
+    pub name: String,
+    /// text, voice, category, announcement, forum or stage. Defaults to text.
+    pub kind: Option<String>,
+    /// Parent category ID, digits only.
+    pub parent_id: Option<String>,
+    /// Channel topic, at most 1024 characters.
+    pub topic: Option<String>,
+    /// Age-restrict the channel. Defaults to false.
+    pub nsfw: Option<bool>,
+    /// Sort position within the guild.
+    pub position: Option<u16>,
+    /// Validate and report without creating anything. Off by default.
+    pub dry_run: Option<bool>,
+}
+
+/// Arguments for `discord_edit_channel`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EditChannelArgs {
+    /// Discord channel ID, digits only.
+    pub channel_id: String,
+    /// New name, 1-100 characters.
+    pub name: Option<String>,
+    /// New topic, at most 1024 characters.
+    pub topic: Option<String>,
+    /// Age-restrict or unrestrict the channel.
+    pub nsfw: Option<bool>,
+    /// Slowmode in seconds, 0-21600.
+    pub slowmode_seconds: Option<u16>,
+    /// Validate and report without changing anything. Off by default.
+    pub dry_run: Option<bool>,
+}
+
+/// Arguments for `discord_delete_channel`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteChannelArgs {
+    /// Discord channel ID, digits only.
+    pub channel_id: String,
+    /// Validate and report without deleting anything. Off by default.
+    pub dry_run: Option<bool>,
+}
+
+/// Arguments for `discord_set_permission_overwrite`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetOverwriteArgs {
+    /// Discord channel ID, digits only.
+    pub channel_id: String,
+    /// Role or member ID the overwrite applies to.
+    pub target_id: String,
+    /// `role` or `member`.
+    pub target_type: String,
+    /// Permission names to grant, e.g. `VIEW_CHANNEL`.
+    pub allow: Option<Vec<String>>,
+    /// Permission names to revoke, e.g. `SEND_MESSAGES`.
+    pub deny: Option<Vec<String>>,
+    /// Validate and report without changing anything. Off by default.
+    pub dry_run: Option<bool>,
+}
+
+/// Arguments for `discord_delete_permission_overwrite`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteOverwriteArgs {
+    /// Discord channel ID, digits only.
+    pub channel_id: String,
+    /// Role or member ID the overwrite applies to.
+    pub target_id: String,
+    /// `role` or `member`.
+    pub target_type: String,
+    /// Validate and report without removing anything. Off by default.
+    pub dry_run: Option<bool>,
+}
+
+/// Arguments for `discord_create_thread`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateThreadArgs {
+    /// Discord channel ID, digits only, that will contain the thread.
+    pub channel_id: String,
+    /// Thread name, 1-100 characters.
+    pub name: String,
+    /// Start the thread from this message instead of standalone.
+    pub from_message_id: Option<String>,
+    /// Whether a standalone thread is private. Defaults to false.
+    pub private: Option<bool>,
+    /// Auto-archive delay in minutes: 60, 1440, 4320 or 10080.
+    pub auto_archive_minutes: Option<u16>,
+    /// Validate and report without creating anything. Off by default.
+    pub dry_run: Option<bool>,
+}
+
+/// Arguments for `discord_edit_thread`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EditThreadArgs {
+    /// Discord thread ID, digits only.
+    pub thread_id: String,
+    /// Archive or unarchive the thread.
+    pub archived: Option<bool>,
+    /// Lock or unlock the thread.
+    pub locked: Option<bool>,
+    /// Validate and report without changing anything. Off by default.
+    pub dry_run: Option<bool>,
+}
+
+/// Arguments for `discord_create_invite`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateInviteArgs {
+    /// Discord channel ID, digits only.
+    pub channel_id: String,
+    /// Seconds until expiry, 0-604800; 0 means never. Defaults to 86400.
+    pub max_age_seconds: Option<u32>,
+    /// Uses before expiry, 0-100; 0 means unlimited. Defaults to 0.
+    pub max_uses: Option<u16>,
+    /// Grant temporary membership. Defaults to false.
+    pub temporary: Option<bool>,
+    /// Ask Discord for a fresh code each time. Defaults to false.
+    pub unique: Option<bool>,
+    /// Validate and report without creating anything. Off by default.
+    pub dry_run: Option<bool>,
+}
+
+/// Arguments for `discord_delete_invite`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteInviteArgs {
+    /// Invite code, as it appears in the invite URL.
+    pub code: String,
+    /// Validate and report without revoking anything. Off by default.
+    pub dry_run: Option<bool>,
+}
+
 /// What a mutating tool returns.
 #[derive(Serialize)]
 struct MutationReport<T> {
@@ -292,6 +436,37 @@ fn parse_optional<T>(
     match value.as_deref() {
         Some(text) => Ok(Some(parse(text)?)),
         None => Ok(None),
+    }
+}
+
+/// Trim a required name and reject an empty one.
+fn require_name(value: &str, field: &str) -> Result<String, AppError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::invalid_argument(format!(
+            "`{field}` must not be empty"
+        )));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn parse_overwrite_target(id: &str, kind: &str) -> Result<OverwriteTarget, AppError> {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "role" => Ok(OverwriteTarget::Role(RoleId::parse(id)?)),
+        "member" | "user" => Ok(OverwriteTarget::Member(UserId::parse(id)?)),
+        other => Err(AppError::invalid_argument(format!(
+            "`target_type` must be `role` or `member` (got `{other}`)"
+        ))),
+    }
+}
+
+/// Discord accepts only four auto-archive delays.
+fn check_auto_archive(minutes: Option<u16>) -> Result<Option<u16>, AppError> {
+    match minutes {
+        None | Some(60 | 1_440 | 4_320 | 10_080) => Ok(minutes),
+        Some(other) => Err(AppError::invalid_argument(format!(
+            "`auto_archive_minutes` must be 60, 1440, 4320 or 10080 (got {other})"
+        ))),
     }
 }
 
@@ -737,6 +912,341 @@ impl DiscordMcpServer {
                 .unpin_message(&channel_id, &message_id, args.dry_run.unwrap_or(false))
                 .await?;
             Ok(mutation_report("discord_unpin_message", outcome))
+        })
+        .await)
+    }
+
+    #[tool(
+        name = "discord_create_channel",
+        description = "Create a guild channel. Needs policy.control_enabled, the guild allowlist and an allowed parent. Counts against the action budget.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn discord_create_channel(
+        &self,
+        Parameters(args): Parameters<CreateChannelArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(tool_call("discord_create_channel", async {
+            let guild_id = GuildId::parse(&args.guild_id)?;
+            let name = require_name(&args.name, "name")?;
+            let kind = ChannelKind::parse(args.kind.as_deref().unwrap_or("text"))?;
+            let parent_id = parse_optional(&args.parent_id, ChannelId::parse)?;
+            let spec = NewChannel {
+                name,
+                kind,
+                parent_id,
+                topic: args.topic,
+                nsfw: args.nsfw.unwrap_or(false),
+                position: args.position,
+            };
+            let outcome = self
+                .state()
+                .discord()
+                .create_channel(&guild_id, &spec, args.dry_run.unwrap_or(false))
+                .await?;
+            Ok(mutation_report("discord_create_channel", outcome))
+        })
+        .await)
+    }
+
+    #[tool(
+        name = "discord_edit_channel",
+        description = "Change a channel's name, topic, age restriction or slowmode. Needs policy.control_enabled and the channel allowlist.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn discord_edit_channel(
+        &self,
+        Parameters(args): Parameters<EditChannelArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(tool_call("discord_edit_channel", async {
+            let channel_id = ChannelId::parse(&args.channel_id)?;
+            if args.name.is_none()
+                && args.topic.is_none()
+                && args.nsfw.is_none()
+                && args.slowmode_seconds.is_none()
+            {
+                return Err(AppError::invalid_argument(
+                    "give at least one of `name`, `topic`, `nsfw` or `slowmode_seconds`",
+                ));
+            }
+            if let Some(seconds) = args.slowmode_seconds
+                && seconds > 21_600
+            {
+                return Err(AppError::invalid_argument(
+                    "`slowmode_seconds` must be at most 21600",
+                ));
+            }
+            let spec = ChannelEdit {
+                name: args
+                    .name
+                    .as_deref()
+                    .map(|name| require_name(name, "name"))
+                    .transpose()?,
+                topic: args.topic,
+                nsfw: args.nsfw,
+                slowmode_seconds: args.slowmode_seconds,
+            };
+            let outcome = self
+                .state()
+                .discord()
+                .edit_channel(&channel_id, &spec, args.dry_run.unwrap_or(false))
+                .await?;
+            Ok(mutation_report("discord_edit_channel", outcome))
+        })
+        .await)
+    }
+
+    #[tool(
+        name = "discord_delete_channel",
+        description = "Delete a channel and its messages. Irreversible. Needs policy.control_enabled and the channel allowlist.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn discord_delete_channel(
+        &self,
+        Parameters(args): Parameters<DeleteChannelArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(tool_call("discord_delete_channel", async {
+            let channel_id = ChannelId::parse(&args.channel_id)?;
+            let outcome = self
+                .state()
+                .discord()
+                .delete_channel(&channel_id, args.dry_run.unwrap_or(false))
+                .await?;
+            Ok(mutation_report("discord_delete_channel", outcome))
+        })
+        .await)
+    }
+
+    #[tool(
+        name = "discord_set_permission_overwrite",
+        description = "Set a role or member permission overwrite in a channel. Names are Discord permissions such as VIEW_CHANNEL; ADMINISTRATOR cannot be granted. Needs policy.control_enabled.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn discord_set_permission_overwrite(
+        &self,
+        Parameters(args): Parameters<SetOverwriteArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(tool_call("discord_set_permission_overwrite", async {
+            use crate::discord::permissions::resolve;
+
+            let channel_id = ChannelId::parse(&args.channel_id)?;
+            let target = parse_overwrite_target(&args.target_id, &args.target_type)?;
+            let allow_names = args.allow.unwrap_or_default();
+            let deny_names = args.deny.unwrap_or_default();
+            if allow_names.is_empty() && deny_names.is_empty() {
+                return Err(AppError::invalid_argument(
+                    "give at least one name in `allow` or `deny`",
+                ));
+            }
+            let allow = resolve(&allow_names, "allow", false)?;
+            let deny = resolve(&deny_names, "deny", true)?;
+            let outcome = self
+                .state()
+                .discord()
+                .set_permission_overwrite(
+                    &channel_id,
+                    target,
+                    allow,
+                    deny,
+                    args.dry_run.unwrap_or(false),
+                )
+                .await?;
+            Ok(mutation_report("discord_set_permission_overwrite", outcome))
+        })
+        .await)
+    }
+
+    #[tool(
+        name = "discord_delete_permission_overwrite",
+        description = "Remove a role or member permission overwrite from a channel. Needs policy.control_enabled and the channel allowlist.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn discord_delete_permission_overwrite(
+        &self,
+        Parameters(args): Parameters<DeleteOverwriteArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(tool_call("discord_delete_permission_overwrite", async {
+            let channel_id = ChannelId::parse(&args.channel_id)?;
+            let target = parse_overwrite_target(&args.target_id, &args.target_type)?;
+            let outcome = self
+                .state()
+                .discord()
+                .delete_permission_overwrite(&channel_id, target, args.dry_run.unwrap_or(false))
+                .await?;
+            Ok(mutation_report(
+                "discord_delete_permission_overwrite",
+                outcome,
+            ))
+        })
+        .await)
+    }
+
+    #[tool(
+        name = "discord_create_thread",
+        description = "Start a public, private or message thread in an allowed channel. Needs policy.control_enabled and the parent channel allowlist.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn discord_create_thread(
+        &self,
+        Parameters(args): Parameters<CreateThreadArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(tool_call("discord_create_thread", async {
+            let channel_id = ChannelId::parse(&args.channel_id)?;
+            let name = require_name(&args.name, "name")?;
+            let from_message = parse_optional(&args.from_message_id, MessageId::parse)?;
+            let private = args.private.unwrap_or(false);
+            if private && from_message.is_some() {
+                return Err(AppError::invalid_argument(
+                    "`private` applies only to a standalone thread; a message thread follows the message",
+                ));
+            }
+            let spec = NewThread {
+                name,
+                from_message,
+                private,
+                auto_archive_minutes: check_auto_archive(args.auto_archive_minutes)?,
+            };
+            let outcome = self
+                .state()
+                .discord()
+                .create_thread(&channel_id, &spec, args.dry_run.unwrap_or(false))
+                .await?;
+            Ok(mutation_report("discord_create_thread", outcome))
+        })
+        .await)
+    }
+
+    #[tool(
+        name = "discord_edit_thread",
+        description = "Archive, unarchive, lock or unlock a thread. The thread's parent channel must be allowed. Needs policy.control_enabled.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn discord_edit_thread(
+        &self,
+        Parameters(args): Parameters<EditThreadArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(tool_call("discord_edit_thread", async {
+            let thread_id = ChannelId::parse(&args.thread_id)?;
+            if args.archived.is_none() && args.locked.is_none() {
+                return Err(AppError::invalid_argument(
+                    "give `archived`, `locked`, or both",
+                ));
+            }
+            let outcome = self
+                .state()
+                .discord()
+                .edit_thread(
+                    &thread_id,
+                    args.archived,
+                    args.locked,
+                    args.dry_run.unwrap_or(false),
+                )
+                .await?;
+            Ok(mutation_report("discord_edit_thread", outcome))
+        })
+        .await)
+    }
+
+    #[tool(
+        name = "discord_create_invite",
+        description = "Create an invite for an allowed channel, with optional expiry, use cap, temporary membership and uniqueness. Needs policy.control_enabled.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn discord_create_invite(
+        &self,
+        Parameters(args): Parameters<CreateInviteArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(tool_call("discord_create_invite", async {
+            let channel_id = ChannelId::parse(&args.channel_id)?;
+            let max_age_seconds = args.max_age_seconds.unwrap_or(86_400);
+            if max_age_seconds > 604_800 {
+                return Err(AppError::invalid_argument(
+                    "`max_age_seconds` must be at most 604800 (7 days); 0 means never",
+                ));
+            }
+            let max_uses = args.max_uses.unwrap_or(0);
+            if max_uses > 100 {
+                return Err(AppError::invalid_argument(
+                    "`max_uses` must be at most 100; 0 means unlimited",
+                ));
+            }
+            let spec = NewInvite {
+                max_age_seconds,
+                max_uses,
+                temporary: args.temporary.unwrap_or(false),
+                unique: args.unique.unwrap_or(false),
+            };
+            let outcome = self
+                .state()
+                .discord()
+                .create_invite(&channel_id, &spec, args.dry_run.unwrap_or(false))
+                .await?;
+            Ok(mutation_report("discord_create_invite", outcome))
+        })
+        .await)
+    }
+
+    #[tool(
+        name = "discord_delete_invite",
+        description = "Revoke an invite by code. The invite's channel must be allowed. Needs policy.control_enabled and the action budget.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn discord_delete_invite(
+        &self,
+        Parameters(args): Parameters<DeleteInviteArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(tool_call("discord_delete_invite", async {
+            let code = require_name(&args.code, "code")?;
+            let outcome = self
+                .state()
+                .discord()
+                .delete_invite(&code, args.dry_run.unwrap_or(false))
+                .await?;
+            Ok(mutation_report("discord_delete_invite", outcome))
         })
         .await)
     }

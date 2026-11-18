@@ -86,11 +86,16 @@ channel_allowlist = ["1572365820133118035"]
 ```
 
 Message editing, reactions and pins follow `write_enabled`; deleting a message
-needs `control_enabled`, bulk delete needs `administrative_enabled`, and each
-class has its own allowlist requirement. Every mutation is audited, limited by a
-shared per-minute budget, and never retried. `--read-only` (or
-`DISCORD_MCP_READ_ONLY=1`) overrides the file and disables all of them for a
-session.
+and every channel, permission, thread and invite tool need `control_enabled`,
+bulk delete needs `administrative_enabled`, and each class has its own allowlist
+requirement. Every mutation is audited, limited by a shared per-minute budget,
+and never retried. `--read-only` (or `DISCORD_MCP_READ_ONLY=1`) overrides the
+file and disables all of them for a session.
+
+Structural tools stay inside the allowlist: a thread is checked through its
+parent channel, an invite through the channel it points at, and a channel these
+tools create must be added to `channel_allowlist` before anything may edit or
+delete it. A `dry_run` names the action and sends no request.
 
 ## Streamable HTTP
 

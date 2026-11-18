@@ -15,9 +15,11 @@ use discord_mcp::discord::DiscordApi;
 use discord_mcp::discord::client::MutationOutcome;
 use discord_mcp::discord::ids::{ChannelId, GuildId, MessageId, UserId};
 use discord_mcp::discord::models::{
-    BotIdentity, ChannelKind, ChannelSummary, GuildDetail, GuildSummary, MemberSummary,
-    MessageAuthor, MessageQuery, MessageSummary, Page,
+    BotIdentity, ChannelEdit, ChannelKind, ChannelSummary, GuildDetail, GuildSummary,
+    InviteSummary, MemberSummary, MessageAuthor, MessageQuery, MessageSummary, NewChannel,
+    NewInvite, NewThread, OverwriteTarget, Page,
 };
+use discord_mcp::discord::permissions::PermissionBits;
 use discord_mcp::error::{AppError, ErrorCategory};
 use discord_mcp::policy::audit::{AuditEvent, AuditOutcome, AuditSink, AuditTarget};
 use discord_mcp::policy::gate::PolicyGate;
@@ -42,6 +44,16 @@ enum Call {
     ClearReactions(u64, u64),
     Pin(u64, u64),
     Unpin(u64, u64),
+    CreateChannel(u64),
+    EditChannel(u64),
+    DeleteChannel(u64),
+    SetOverwrite(u64, u64),
+    DeleteOverwrite(u64, u64),
+    CreateThread(u64),
+    EditThread(u64),
+    CreateInvite(u64),
+    DeleteInvite(String),
+    GetInvite(String),
     BotIdentity,
 }
 
@@ -49,6 +61,8 @@ enum Call {
 struct FakeDiscord {
     calls: Mutex<Vec<Call>>,
     channel_guilds: Mutex<HashMap<u64, Option<u64>>>,
+    parents: Mutex<HashMap<u64, u64>>,
+    invite_channels: Mutex<HashMap<String, u64>>,
     hold: Mutex<Option<Arc<Semaphore>>>,
     failure: Mutex<Option<AppError>>,
     guilds: Vec<GuildSummary>,
@@ -59,6 +73,8 @@ impl FakeDiscord {
         Self {
             calls: Mutex::new(Vec::new()),
             channel_guilds: Mutex::new(HashMap::new()),
+            parents: Mutex::new(HashMap::new()),
+            invite_channels: Mutex::new(HashMap::new()),
             hold: Mutex::new(None),
             failure: Mutex::new(None),
             guilds: Vec::new(),
@@ -75,6 +91,30 @@ impl FakeDiscord {
             .expect("channel map")
             .insert(channel, guild);
         self
+    }
+
+    fn with_parent(self, channel: u64, parent: u64) -> Self {
+        self.parents
+            .lock()
+            .expect("parent map")
+            .insert(channel, parent);
+        self
+    }
+
+    fn with_invite(self, code: &str, channel: u64) -> Self {
+        self.invite_channels
+            .lock()
+            .expect("invite map")
+            .insert(code.to_string(), channel);
+        self
+    }
+
+    fn parent_of(&self, channel: u64) -> Option<u64> {
+        self.parents
+            .lock()
+            .expect("parent map")
+            .get(&channel)
+            .copied()
     }
 
     fn failing(self, error: AppError) -> Self {
@@ -192,10 +232,9 @@ impl DiscordApi for FakeDiscord {
 
     async fn get_channel(&self, channel_id: &ChannelId) -> Result<ChannelSummary, AppError> {
         self.record(Call::GetChannel(channel_id.get())).await?;
-        Ok(channel_summary(
-            channel_id.get(),
-            self.guild_of(channel_id.get()),
-        ))
+        let mut summary = channel_summary(channel_id.get(), self.guild_of(channel_id.get()));
+        summary.parent_id = self.parent_of(channel_id.get()).map(ChannelId::from_u64);
+        Ok(summary)
     }
 
     async fn get_messages(
@@ -361,6 +400,144 @@ impl DiscordApi for FakeDiscord {
         self.record(Call::Unpin(channel_id.get(), message_id.get()))
             .await?;
         Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn create_channel(
+        &self,
+        guild_id: &GuildId,
+        _spec: &NewChannel,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<ChannelSummary>, AppError> {
+        self.record(Call::CreateChannel(guild_id.get())).await?;
+        Ok(MutationOutcome::Applied(channel_summary(
+            40,
+            Some(guild_id.get()),
+        )))
+    }
+
+    async fn edit_channel(
+        &self,
+        channel_id: &ChannelId,
+        _spec: &ChannelEdit,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<ChannelSummary>, AppError> {
+        self.record(Call::EditChannel(channel_id.get())).await?;
+        Ok(MutationOutcome::Applied(channel_summary(
+            channel_id.get(),
+            self.guild_of(channel_id.get()),
+        )))
+    }
+
+    async fn delete_channel(
+        &self,
+        channel_id: &ChannelId,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.record(Call::DeleteChannel(channel_id.get())).await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn set_permission_overwrite(
+        &self,
+        channel_id: &ChannelId,
+        target: OverwriteTarget,
+        _allow: PermissionBits,
+        _deny: PermissionBits,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        let target_id = match target {
+            OverwriteTarget::Role(role) => role.get(),
+            OverwriteTarget::Member(user) => user.get(),
+        };
+        self.record(Call::SetOverwrite(channel_id.get(), target_id))
+            .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn delete_permission_overwrite(
+        &self,
+        channel_id: &ChannelId,
+        target: OverwriteTarget,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        let target_id = match target {
+            OverwriteTarget::Role(role) => role.get(),
+            OverwriteTarget::Member(user) => user.get(),
+        };
+        self.record(Call::DeleteOverwrite(channel_id.get(), target_id))
+            .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn create_thread(
+        &self,
+        channel_id: &ChannelId,
+        _spec: &NewThread,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<ChannelSummary>, AppError> {
+        self.record(Call::CreateThread(channel_id.get())).await?;
+        Ok(MutationOutcome::Applied(channel_summary(
+            41,
+            self.guild_of(channel_id.get()),
+        )))
+    }
+
+    async fn edit_thread(
+        &self,
+        thread_id: &ChannelId,
+        _archived: Option<bool>,
+        _locked: Option<bool>,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<ChannelSummary>, AppError> {
+        self.record(Call::EditThread(thread_id.get())).await?;
+        Ok(MutationOutcome::Applied(channel_summary(
+            thread_id.get(),
+            self.guild_of(thread_id.get()),
+        )))
+    }
+
+    async fn create_invite(
+        &self,
+        channel_id: &ChannelId,
+        _spec: &NewInvite,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<InviteSummary>, AppError> {
+        self.record(Call::CreateInvite(channel_id.get())).await?;
+        Ok(MutationOutcome::Applied(InviteSummary {
+            code: "new-code".to_string(),
+            channel_id: Some(*channel_id),
+            guild_id: self.guild_of(channel_id.get()).map(GuildId::from_u64),
+            expires_at: None,
+            max_uses: None,
+            uses: None,
+        }))
+    }
+
+    async fn delete_invite(
+        &self,
+        code: &str,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.record(Call::DeleteInvite(code.to_string())).await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn get_invite(&self, code: &str) -> Result<InviteSummary, AppError> {
+        self.record(Call::GetInvite(code.to_string())).await?;
+        let channel_id = self
+            .invite_channels
+            .lock()
+            .expect("invite map")
+            .get(code)
+            .copied();
+        Ok(InviteSummary {
+            code: code.to_string(),
+            channel_id: channel_id.map(ChannelId::from_u64),
+            guild_id: Some(guild(1)),
+            expires_at: None,
+            max_uses: None,
+            uses: None,
+        })
     }
 }
 
@@ -1176,6 +1353,263 @@ async fn a_tool_that_requires_dry_run_refuses_a_real_call() {
     assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
     assert!(error.message().contains("dry_run"), "got {error}");
     assert!(fake.calls().is_empty());
+}
+
+fn new_channel_spec() -> NewChannel {
+    NewChannel {
+        name: "ops".to_string(),
+        kind: ChannelKind::Text,
+        parent_id: None,
+        topic: None,
+        nsfw: false,
+        position: None,
+    }
+}
+
+fn new_thread_spec() -> NewThread {
+    NewThread {
+        name: "incident".to_string(),
+        from_message: None,
+        private: false,
+        auto_archive_minutes: None,
+    }
+}
+
+fn new_invite_spec() -> NewInvite {
+    NewInvite {
+        max_age_seconds: 3_600,
+        max_uses: 1,
+        temporary: false,
+        unique: false,
+    }
+}
+
+#[tokio::test]
+async fn structural_changes_are_refused_until_control_is_enabled() {
+    let fake = Arc::new(FakeDiscord::new());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(PolicyConfig::default()),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    let errors = [
+        gated
+            .create_channel(&guild(1), &new_channel_spec(), false)
+            .await
+            .expect_err("create_channel"),
+        gated
+            .edit_channel(
+                &channel(4),
+                &ChannelEdit {
+                    name: Some("renamed".to_string()),
+                    ..ChannelEdit::default()
+                },
+                false,
+            )
+            .await
+            .expect_err("edit_channel"),
+        gated
+            .delete_channel(&channel(4), false)
+            .await
+            .expect_err("delete_channel"),
+        gated
+            .set_permission_overwrite(
+                &channel(4),
+                OverwriteTarget::Role(discord_mcp::discord::ids::RoleId::from_u64(7)),
+                PermissionBits::default(),
+                PermissionBits::default(),
+                false,
+            )
+            .await
+            .expect_err("set_permission_overwrite"),
+        gated
+            .create_thread(&channel(4), &new_thread_spec(), false)
+            .await
+            .expect_err("create_thread"),
+        gated
+            .create_invite(&channel(4), &new_invite_spec(), false)
+            .await
+            .expect_err("create_invite"),
+        gated
+            .delete_invite("abc", false)
+            .await
+            .expect_err("delete_invite"),
+    ];
+
+    for error in errors {
+        assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+    }
+    assert!(
+        fake.calls().is_empty(),
+        "control is off, so nothing may reach Discord: {:?}",
+        fake.calls()
+    );
+}
+
+#[tokio::test]
+async fn structural_dry_runs_plan_without_any_request() {
+    let fake = Arc::new(FakeDiscord::new());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(mutation_config()),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    let created = gated
+        .create_channel(&guild(1), &new_channel_spec(), true)
+        .await
+        .expect("a dry run is a policy decision");
+    let edited = gated
+        .edit_channel(
+            &channel(4),
+            &ChannelEdit {
+                topic: Some("new topic".to_string()),
+                ..ChannelEdit::default()
+            },
+            true,
+        )
+        .await
+        .expect("a dry run is a policy decision");
+    let thread = gated
+        .create_thread(&channel(4), &new_thread_spec(), true)
+        .await
+        .expect("a dry run is a policy decision");
+
+    assert_eq!(created, MutationOutcome::Planned);
+    assert_eq!(edited, MutationOutcome::Planned);
+    assert_eq!(thread, MutationOutcome::Planned);
+    assert!(fake.calls().is_empty(), "a dry run sends nothing");
+}
+
+#[tokio::test]
+async fn structural_changes_obey_the_channel_allowlist() {
+    let fake = Arc::new(FakeDiscord::new());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(mutation_config()),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    let errors = [
+        gated
+            .delete_channel(&channel(5), false)
+            .await
+            .expect_err("channel 5 is not allowed"),
+        gated
+            .create_thread(&channel(5), &new_thread_spec(), false)
+            .await
+            .expect_err("channel 5 is not allowed"),
+        gated
+            .create_channel(
+                &guild(1),
+                &NewChannel {
+                    parent_id: Some(channel(5)),
+                    ..new_channel_spec()
+                },
+                false,
+            )
+            .await
+            .expect_err("a parent outside the allowlist is not a foothold"),
+    ];
+
+    for error in errors {
+        assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+    }
+    assert!(fake.calls().is_empty());
+}
+
+#[tokio::test]
+async fn thread_edits_authorize_through_the_parent_channel() {
+    let fake = Arc::new(FakeDiscord::new().with_parent(9, 4));
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(mutation_config()),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    let outcome = gated
+        .edit_thread(&channel(9), Some(true), None, false)
+        .await
+        .expect("the thread's parent is allowed");
+
+    assert_eq!(outcome, MutationOutcome::Applied(channel_summary(9, None)));
+    assert_eq!(
+        fake.calls(),
+        vec![Call::GetChannel(9), Call::EditThread(9)],
+        "scope is resolved once, then the change is sent"
+    );
+}
+
+#[tokio::test]
+async fn deleting_an_invite_resolves_its_channel_first() {
+    let denied_fake = Arc::new(FakeDiscord::new().with_invite("abc", 5));
+    let denied = gate(
+        Arc::clone(&denied_fake),
+        policy(mutation_config()),
+        Arc::new(RecordingAudit::default()),
+    );
+    let error = denied
+        .delete_invite("abc", false)
+        .await
+        .expect_err("the invite belongs to an unlisted channel");
+    assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+    assert_eq!(
+        denied_fake.calls(),
+        vec![Call::GetInvite("abc".to_string())],
+        "a refused invite costs no action"
+    );
+
+    let allowed_fake = Arc::new(FakeDiscord::new().with_invite("abc", 4));
+    let allowed = gate(
+        Arc::clone(&allowed_fake),
+        policy(mutation_config()),
+        Arc::new(RecordingAudit::default()),
+    );
+    allowed
+        .delete_invite("abc", false)
+        .await
+        .expect("the invite's channel is allowed");
+    assert_eq!(
+        allowed_fake.calls(),
+        vec![
+            Call::GetInvite("abc".to_string()),
+            Call::DeleteInvite("abc".to_string())
+        ]
+    );
+}
+
+#[tokio::test]
+async fn structural_changes_share_the_action_budget() {
+    let fake = Arc::new(FakeDiscord::new());
+    let config = PolicyConfig {
+        autonomy: AutonomyConfig {
+            max_actions_per_minute: 1,
+            ..AutonomyConfig::default()
+        },
+        ..mutation_config()
+    };
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(config),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    gated
+        .create_invite(&channel(4), &new_invite_spec(), false)
+        .await
+        .expect("the first action is within budget");
+    let error = gated
+        .create_thread(&channel(4), &new_thread_spec(), false)
+        .await
+        .expect_err("the budget is shared across control tools");
+
+    assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+    assert!(
+        error.message().contains("max_actions_per_minute"),
+        "got {error}"
+    );
+    assert_eq!(fake.calls(), vec![Call::CreateInvite(4)]);
 }
 
 fn snowflake_at(millis: u64) -> MessageId {

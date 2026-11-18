@@ -79,3 +79,4 @@ snowflake_type!(GuildId, "guild_id");
 snowflake_type!(ChannelId, "channel_id");
 snowflake_type!(MessageId, "message_id");
 snowflake_type!(UserId, "user_id");
+snowflake_type!(RoleId, "role_id");

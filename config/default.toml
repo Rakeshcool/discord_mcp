@@ -43,7 +43,7 @@ max_concurrent_requests = 8
 
 # Mutation classes beyond sending messages. Each is off by default and needs its
 # own allowlist before it can be enabled.
-control_enabled = false                   # channel, role and invite control
+control_enabled = false                   # channel, thread and invite control
 administrative_enabled = false            # guild settings, automod, bulk delete
 
 [policy.autonomy]

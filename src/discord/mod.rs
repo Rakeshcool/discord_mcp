@@ -18,6 +18,7 @@ pub mod client;
 pub mod errors;
 pub mod ids;
 pub mod models;
+pub mod permissions;
 pub mod rate_limit;
 
 pub use client::DiscordApi;

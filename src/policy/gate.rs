@@ -27,9 +27,11 @@ use tracing::Instrument;
 use crate::discord::client::{DiscordApi, MutationOutcome};
 use crate::discord::ids::{ChannelId, GuildId, MessageId, UserId};
 use crate::discord::models::{
-    BotIdentity, ChannelSummary, GuildDetail, GuildSummary, MemberSummary, MessageQuery,
-    MessageSummary, Page,
+    BotIdentity, ChannelEdit, ChannelSummary, GuildDetail, GuildSummary, InviteSummary,
+    MemberSummary, MessageQuery, MessageSummary, NewChannel, NewInvite, NewThread, OverwriteTarget,
+    Page,
 };
+use crate::discord::permissions::PermissionBits;
 use crate::error::{AppError, ErrorCategory};
 use crate::policy::audit::{AuditEvent, AuditSink, AuditTarget};
 use crate::policy::rules::Policy;
@@ -594,9 +596,252 @@ impl DiscordApi for PolicyGate {
         })
         .await
     }
+
+    async fn create_channel(
+        &self,
+        guild_id: &GuildId,
+        spec: &NewChannel,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<ChannelSummary>, AppError> {
+        const ACTION: &str = "discord_create_channel";
+        let target = AuditTarget::for_guild(*guild_id);
+        self.policy
+            .check_tool(ACTION)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+        self.policy
+            .check_guild(guild_id)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+        // A nested channel is only created where the allowlist already reaches,
+        // so a category outside scope cannot be used as a foothold.
+        if let Some(parent) = spec.parent_id {
+            self.policy
+                .check_channel(&parent)
+                .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+        }
+
+        self.run_mutation(ACTION, target, dry_run, async {
+            let _permit = self.permit().await?;
+            let outcome = self.inner.create_channel(guild_id, spec, false).await?;
+            applied(outcome)
+        })
+        .await
+    }
+
+    async fn edit_channel(
+        &self,
+        channel_id: &ChannelId,
+        spec: &ChannelEdit,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<ChannelSummary>, AppError> {
+        self.channel_mutation("discord_edit_channel", channel_id, dry_run, async move {
+            let outcome = self.inner.edit_channel(channel_id, spec, false).await?;
+            applied(outcome)
+        })
+        .await
+    }
+
+    async fn delete_channel(
+        &self,
+        channel_id: &ChannelId,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.channel_mutation("discord_delete_channel", channel_id, dry_run, async move {
+            let outcome = self.inner.delete_channel(channel_id, false).await?;
+            applied(outcome)
+        })
+        .await
+    }
+
+    async fn set_permission_overwrite(
+        &self,
+        channel_id: &ChannelId,
+        target: OverwriteTarget,
+        allow: PermissionBits,
+        deny: PermissionBits,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.channel_mutation(
+            "discord_set_permission_overwrite",
+            channel_id,
+            dry_run,
+            async move {
+                let outcome = self
+                    .inner
+                    .set_permission_overwrite(channel_id, target, allow, deny, false)
+                    .await?;
+                applied(outcome)
+            },
+        )
+        .await
+    }
+
+    async fn delete_permission_overwrite(
+        &self,
+        channel_id: &ChannelId,
+        target: OverwriteTarget,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.channel_mutation(
+            "discord_delete_permission_overwrite",
+            channel_id,
+            dry_run,
+            async move {
+                let outcome = self
+                    .inner
+                    .delete_permission_overwrite(channel_id, target, false)
+                    .await?;
+                applied(outcome)
+            },
+        )
+        .await
+    }
+
+    async fn create_thread(
+        &self,
+        channel_id: &ChannelId,
+        spec: &NewThread,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<ChannelSummary>, AppError> {
+        self.channel_mutation("discord_create_thread", channel_id, dry_run, async move {
+            let outcome = self.inner.create_thread(channel_id, spec, false).await?;
+            applied(outcome)
+        })
+        .await
+    }
+
+    async fn edit_thread(
+        &self,
+        thread_id: &ChannelId,
+        archived: Option<bool>,
+        locked: Option<bool>,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<ChannelSummary>, AppError> {
+        const ACTION: &str = "discord_edit_thread";
+        let target = AuditTarget::for_channel(*thread_id);
+        self.policy
+            .check_tool(ACTION)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+        // A thread is never on the allowlist when it was just created, so the
+        // parent channel's permission stands in for it.
+        self.authorize_thread(thread_id)
+            .await
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+
+        self.run_mutation(ACTION, target, dry_run, async {
+            let _permit = self.permit().await?;
+            let outcome = self
+                .inner
+                .edit_thread(thread_id, archived, locked, false)
+                .await?;
+            applied(outcome)
+        })
+        .await
+    }
+
+    async fn create_invite(
+        &self,
+        channel_id: &ChannelId,
+        spec: &NewInvite,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<InviteSummary>, AppError> {
+        self.channel_mutation("discord_create_invite", channel_id, dry_run, async move {
+            let outcome = self.inner.create_invite(channel_id, spec, false).await?;
+            applied(outcome)
+        })
+        .await
+    }
+
+    async fn delete_invite(
+        &self,
+        code: &str,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        const ACTION: &str = "discord_delete_invite";
+        let target = AuditTarget::none();
+        self.policy
+            .check_tool(ACTION)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+        // The code does not name a channel, so policy resolves it before the
+        // budget is spent: a code outside the allowlist never costs an action.
+        self.authorize_invite(code)
+            .await
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+
+        self.run_mutation(ACTION, target, dry_run, async {
+            let _permit = self.permit().await?;
+            let outcome = self.inner.delete_invite(code, false).await?;
+            applied(outcome)
+        })
+        .await
+    }
+
+    async fn get_invite(&self, code: &str) -> Result<InviteSummary, AppError> {
+        let _permit = self.permit().await?;
+        self.inner.get_invite(code).await
+    }
 }
 
 impl PolicyGate {
+    /// Resolve a thread's scope through its parent channel.
+    async fn authorize_thread(&self, thread_id: &ChannelId) -> Result<(), AppError> {
+        if self.policy.allows_channel(thread_id) {
+            return self.authorize_channel_guild(thread_id).await;
+        }
+        // Resolution only; it must not spend an action or write an audit record
+        // of its own, because the mutation it serves writes exactly one.
+        let _permit = self.permit().await?;
+        let channel = self.inner.get_channel(thread_id).await?;
+        let parent = channel.parent_id.ok_or_else(|| {
+            AppError::policy_blocked(
+                "nothing is allowed here: neither the thread nor a parent channel is allowed",
+            )
+        })?;
+        self.policy.check_channel(&parent)?;
+        if let Some(guild_id) = channel.guild_id {
+            self.policy.check_guild(&guild_id)?;
+        }
+        Ok(())
+    }
+
+    /// Resolve an invite's channel before spending an action on it.
+    async fn authorize_invite(&self, code: &str) -> Result<(), AppError> {
+        let invite = self.get_invite(code).await?;
+        let channel_id = invite.channel_id.ok_or_else(|| {
+            AppError::policy_blocked("the invite does not name a channel policy can check")
+        })?;
+        self.policy.check_channel(&channel_id)?;
+        if let Some(guild_id) = invite.guild_id {
+            self.policy.check_guild(&guild_id)?;
+        }
+        Ok(())
+    }
+
+    /// Channel-scoped structural mutations share one preamble: the control
+    /// flag, the channel allowlist, the budget and the guild check when the
+    /// guild allowlist narrows scope.
+    async fn channel_mutation<T>(
+        &self,
+        action: &'static str,
+        channel_id: &ChannelId,
+        dry_run: bool,
+        body: impl Future<Output = Result<T, AppError>>,
+    ) -> Result<MutationOutcome<T>, AppError> {
+        let target = AuditTarget::for_channel(*channel_id);
+        self.policy
+            .check_tool(action)
+            .inspect_err(|error| self.record_refusal(action, target, error))?;
+        self.policy
+            .check_channel(channel_id)
+            .inspect_err(|error| self.record_refusal(action, target, error))?;
+
+        self.run_mutation(action, target, dry_run, async {
+            let _permit = self.permit().await?;
+            self.authorize_channel_guild(channel_id).await?;
+            body.await
+        })
+        .await
+    }
+
     /// Message-scoped mutations share one preamble: write flag, allowlist,
     /// concurrency permit, guild check when the guild allowlist narrows scope.
     async fn message_mutation(
