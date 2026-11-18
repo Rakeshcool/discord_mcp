@@ -176,8 +176,9 @@ session, and no database — the process holds nothing beyond the current call.
 | TLS termination and reverse-proxy deployment guide | Phase 6 |
 | HTTP-level concurrency limit and health endpoint | Phase 6 |
 | `discord_send_message` with pre-flight policy and audit record | Phase 7 |
-| Correlation IDs on every tool execution | Phase 6 |
-| Release gate: full test suite, checksums, packaging | Phase 7 |
+| Correlation IDs on every tool execution | Phase 8 |
+| Packaging: SHA-256 checksum, clean-install test, first tag | Phase 9 |
+| Release gate: full test suite, `fmt`, Clippy, acceptance criteria | Phase 10 |
 
 ## 8. Reporting
 
