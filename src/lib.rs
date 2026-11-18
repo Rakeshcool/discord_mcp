@@ -5,7 +5,7 @@
 //! - [`transport`] — MCP transports (STDIO now, Streamable HTTP in a later phase). No Discord logic.
 //! - [`mcp`] — MCP protocol layer: server handler, tool registry, resources, prompts.
 //! - [`app`] — application services: startup orchestration and shared state.
-//! - [`policy`] — allowlists, risk classification, limits and approval decisions.
+//! - [`policy`] — allowlists, risk classification and mutation limits.
 //! - [`discord`] — the Discord adapter. Discord models never leave this module.
 //! - [`config`], [`security`], [`observability`], [`error`] — the foundation.
 //!

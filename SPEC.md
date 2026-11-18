@@ -297,7 +297,6 @@ read_enabled = true
 write_enabled = false
 control_enabled = false
 administrative_enabled = false
-require_confirmation_for_destructive = true
 guild_allowlist = []
 channel_allowlist = []
 max_messages_per_read = 100
@@ -332,7 +331,7 @@ Implement defense in depth:
 1. **Discord permissions:** Discord remains the final authority. The bot must have the permissions required for each action.
 2. **Server policy:** Local allowlists and read/write toggles.
 3. **Tool policy:** Each tool is classified read, write, destructive (control) or administrative, and its class flag must be true.
-4. **Approval policy:** MCP has no confirmation primitive this server can rely on, so the shipped gate is the class flag plus allowlist plus budget plus audit, not a confirmation prompt. The `approval` module is a fail-closed abstraction (`UnavailableApproval` denies everything) and is not in the tool path; no tool claims an approval it did not get.
+4. **Approval policy:** The server offers no confirmation prompt. Its gate is the class flag plus allowlist plus rolling budget plus audit, with `dry_run` as the plan step; no tool claims an approval it did not get. MCP elicitation is optional client UI and is unavailable on protocol revisions that forbid server-to-client requests, so a fail-closed prompt would silently disable destructive tools. Configuration has no setting that promises one.
 5. **Input policy:** Validate IDs, lengths, ranges, mention behavior, target guild/channel, role hierarchy and bulk-delete age/count before any request.
 6. **Audit policy:** Record action name, target IDs, outcome, error category and correlation ID, without secrets or content.
 7. **Budget policy:** Cap real mutations per rolling minute, share the cap across tools, and let dry runs cost nothing.
@@ -393,5 +392,6 @@ Return safe, actionable messages. Keep raw diagnostics in redacted logs. Preserv
 ## 14. Key design rule
 
 MCP is the interface, not the permission system. Discord permissions, local
-policy, and explicit approval must all be enforced before a write operation is
-sent. The server must fail closed when policy or authorization state is unclear.
+policy, the class flag and its allowlist must all be enforced before a write
+operation is sent, and a configured `dry_run` requirement must be satisfied. The
+server must fail closed when policy or authorization state is unclear.

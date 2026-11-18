@@ -161,7 +161,6 @@ pub fn sanitize_mentions(content: &str, allow_mentions: bool) -> SanitizedMessag
 pub struct Policy {
     read_enabled: bool,
     write_enabled: bool,
-    require_confirmation_for_destructive: bool,
     /// Sorted and de-duplicated; empty means "no guild restriction".
     guilds: Vec<GuildId>,
     /// Sorted and de-duplicated; empty means "no channel restriction".
@@ -204,7 +203,6 @@ impl Policy {
         Ok(Self {
             read_enabled: config.read_enabled,
             write_enabled: config.write_enabled,
-            require_confirmation_for_destructive: config.require_confirmation_for_destructive,
             guilds: parse_ids(
                 "policy.guild_allowlist",
                 &config.guild_allowlist,
@@ -376,11 +374,6 @@ impl Policy {
             )));
         }
         Ok(sanitize_mentions(content, self.allow_mass_mentions))
-    }
-
-    /// Whether destructive actions require confirmation.
-    pub const fn require_confirmation_for_destructive(&self) -> bool {
-        self.require_confirmation_for_destructive
     }
 
     /// The concurrency ceiling for in-flight Discord requests.

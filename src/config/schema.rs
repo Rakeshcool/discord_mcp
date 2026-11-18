@@ -161,8 +161,6 @@ pub struct PolicyConfig {
     pub read_enabled: bool,
     /// Enable write tools. Off by default.
     pub write_enabled: bool,
-    /// Require a trustworthy approval flow before destructive actions.
-    pub require_confirmation_for_destructive: bool,
     /// Guilds the server may touch. Empty means every guild the bot can see.
     pub guild_allowlist: Vec<String>,
     /// Channels the server may touch. Required when writes are enabled.
@@ -188,7 +186,6 @@ impl Default for PolicyConfig {
         Self {
             read_enabled: true,
             write_enabled: false,
-            require_confirmation_for_destructive: true,
             guild_allowlist: Vec::new(),
             channel_allowlist: Vec::new(),
             max_messages_per_read: 100,

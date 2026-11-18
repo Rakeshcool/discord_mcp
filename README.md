@@ -121,6 +121,11 @@ retried after an ambiguous outcome. `policy.autonomy.require_dry_run` can requir
 dry-run step for named tools, and `--read-only` (or `DISCORD_MCP_READ_ONLY=1`)
 turns every mutation class off for a session.
 
+There is no confirmation prompt. The approval model is the class flag, the
+allowlist, the rolling budget, `dry_run` as the plan step and the audit record of
+every attempt; a client that needs human sign-off asks for it before the real
+call.
+
 Bulk delete additionally enforces Discord's 2–100 message range, the 14-day
 window and `policy.autonomy.max_bulk_delete`. Mass mentions stay off: parsed
 `@everyone`, `@here`, role and user mentions are not sent as live pings.

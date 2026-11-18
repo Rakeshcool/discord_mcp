@@ -59,7 +59,7 @@ live checks listed under it.
 - [x] Message-length and page-size limits.
 - [x] Mention neutralisation; mass mentions rejected by validation.
 - [x] Concurrency limit with backpressure.
-- [x] Destructive-action approval abstraction, failing closed.
+- [x] Destructive-action approval abstraction *(CLOSED — removed before the server-control merge: no client-independent confirmation primitive, so `dry_run` plus the class flag, allowlist, budget and audit are the approval model)*.
 - [x] Policy unit tests and content-free audit model.
 
 **Exit criteria:** Every policy rule tested independently of MCP and Discord transport.
@@ -186,8 +186,9 @@ Everything below is implemented and tested on the branch; this is its gate.
 - [x] Remote scope resolved before spending an action: a thread through its parent channel, an invite through its channel, roles through the hierarchy.
 - [x] Bulk delete: 2–`max_bulk_delete` distinct IDs, none older than 14 days, checked from the snowflake without a request.
 - [x] `--read-only` / `DISCORD_MCP_READ_ONLY=1` disables all three mutation classes for the session.
+- [x] Removed the unused `policy.require_confirmation_for_destructive` setting; configuration rejects it, and the docs describe `dry_run` plus allowlists as the approval model.
 - [x] Documentation updated against the code: `README.md`, `docs/TOOLS.md`, `docs/SETUP.md`, `docs/SECURITY.md`, `CHANGELOG.md`.
-- [x] All 223 tests pass (17 lib, 50 integration, 33 protocol, 123 unit).
+- [x] All 222 tests pass (17 lib, 50 integration, 34 protocol, 121 unit).
 - [x] `cargo fmt --all --check` passes.
 - [x] `cargo clippy --all-targets --all-features -- -D warnings` passes.
 - [x] Live role-tool checks in the test guild: create/edit/delete/assign/remove, dry runs, `@everyone` refusals, `ADMINISTRATOR` refusal, and above-bot calls returning `403` / `50013`.

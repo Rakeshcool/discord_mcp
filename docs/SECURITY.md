@@ -82,12 +82,13 @@ session, and no database — the process holds nothing beyond the current call.
   allowlist, budget and audit path all pass. The set stays bounded: no bans,
   kicks, member or nickname management, webhooks, emoji management, guild
   settings, automod or channel reordering.
-- **There is no approval prompt, and the server does not claim one.** MCP has no
-  confirmation primitive the process can trust, so `policy/approval.rs` is a
-  fail-closed abstraction that denies everything and is deliberately not wired
-  into the tool path. What bounds a destructive call is the class flag, the
-  allowlist, the rolling budget and the audit trail — not consent it did not
-  obtain.
+- **There is no approval prompt, and the server does not claim one.** MCP
+  elicitation is optional client UI: many clients do not declare it, and newer
+  protocol revisions forbid server-to-client requests, so a fail-closed prompt
+  would silently disable every destructive tool. What bounds a destructive call
+  is the class flag, the allowlist, the rolling budget, `dry_run` as the plan
+  step and the audit trail — not consent it did not obtain. The configuration
+  has no setting that promises otherwise.
 - **Policy is enforced, not advisory.** `PolicyGate` wraps the Discord client and
   `AppState` stores only the wrapped handle, so no tool can reach Discord without
   passing the allowlists, feature flags, page-size ceiling and concurrency cap.
@@ -253,7 +254,7 @@ session, and no database — the process holds nothing beyond the current call.
 | Control | Why |
 |---|---|
 | Draft/review prompts | optional in the specification; no draft or review workflow to attach them to |
-| Host-level approval prompt | MCP offers no confirmation primitive this process can trust; the shipped bound is class flag + allowlist + budget + audit, and the approval module denies rather than pretends |
+| Host-level approval prompt | MCP elicitation is optional client UI and is not a gate this build relies on; the shipped approval model is class flag + allowlist + budget + `dry_run` + audit |
 | Guild settings, automod, bans/kicks, member and nickname management, webhooks, emoji management | no tool exists for them in this build |
 
 Everything else in this document describes shipped behaviour.

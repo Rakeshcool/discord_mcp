@@ -42,6 +42,13 @@ Notable changes to `discord-mcp`, grouped by capability rather than by commit â€
   a dry run. The docs now spell out the Discord side: role tools need Manage
   Roles, can only touch roles below the bot's highest role, and report a missing
   permission or hierarchy refusal as `PERMISSION_DENIED` (`403`, code `50013`).
+- **Removed `policy.require_confirmation_for_destructive`.** It defaulted to
+  `true` but no tool path consulted it, so it promised a prompt that did not
+  exist. Confirmation cannot be enforced without silently disabling destructive
+  tools on clients that cannot answer, so the shipped approval model is the
+  class flag, the allowlist, the rolling budget, `dry_run` and the audit record.
+  A configuration that still contains the key is rejected rather than silently
+  ignored.
 
 ## v0.1.0 â€” 2026-11-18
 

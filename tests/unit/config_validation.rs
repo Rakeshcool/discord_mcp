@@ -52,11 +52,22 @@ fn embedded_defaults_are_valid_and_safe() {
     assert!(config.discord.api_base.starts_with("https://"));
     assert!(!config.policy.write_enabled);
     assert!(!config.policy.allow_mass_mentions);
-    assert!(config.policy.require_confirmation_for_destructive);
     assert_eq!(config.policy.max_messages_per_read, 100);
     assert_eq!(config.policy.max_message_characters, 2_000);
     assert!(config.logging.redact_message_content);
     assert!(!config.logging.log_tool_arguments);
+}
+
+#[test]
+fn the_removed_confirmation_setting_is_rejected() {
+    // The setting defaulted to true but no tool path consulted it. Hiding it from
+    // the schema would silently ignore an operator's intent, so a configuration
+    // that still contains it must fail instead of loading.
+    let message = rejection("[policy]\nrequire_confirmation_for_destructive = false\n");
+    assert!(
+        message.contains("require_confirmation_for_destructive"),
+        "unexpected message: {message}"
+    );
 }
 
 #[test]
