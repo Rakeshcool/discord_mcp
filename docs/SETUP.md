@@ -198,8 +198,9 @@ wrapper that owns the credential.
 **Native Credential Manager lookup is not implemented.** `SPEC.md` lists a
 `keyring`-backed store as optional, and this build reads the environment only. If
 you want the token out of environment blocks entirely, the launcher above is the
-supported shape: the variable exists only in the server process and its children,
-and the stored credential is protected by your Windows account. To check it is
+supported shape: the variable exists only in that launcher's session and the
+server process it starts, and the stored credential is protected by your Windows
+account. To check it is
 wired up without starting the server, run `--validate-config` — it reports whether
 the variable is present and never prints its value.
 
