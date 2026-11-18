@@ -181,10 +181,9 @@ performed by the ID parsers, which return `INVALID_ARGUMENT` before any request.
 - Every dependency is pinned to an exact version and `Cargo.lock` is committed,
   so a build is reproducible and an advisory can be matched to a specific
   version range.
-- The check is `cargo audit` against that lock file. **It has not been run for
-  this tree**: `cargo audit` is not installed in the development environment, and
-  installing a scanner was not part of this phase. Running it is the first thing
-  a release does.
+- The check is `cargo audit` against that lock file. It is installed
+  (`cargo-audit 0.23.0`) and has been run against the committed lock file; the
+  result is below.
 - Cadence: before every release tag, and monthly while the project is maintained.
 - An advisory that affects a reachable code path (an HTTP client, TLS, the MCP
   protocol layer) is a release blocker. One that does not is recorded in the
@@ -195,6 +194,34 @@ performed by the ID parsers, which return `INVALID_ARGUMENT` before any request.
   commit. `rmcp`, `twilight-http` and `rustls` can change behaviour rather than
   just fix a bug, so each upgrade gets a changelog read plus the adapter and
   protocol suites.
+
+### Scan result — 2026-11-18
+
+`cargo install cargo-audit --locked` built and installed `cargo-audit 0.23.0`.
+`cargo audit` then loaded the RustSec database (1,533 advisories) and scanned the
+committed `Cargo.lock`: **204 crates, 0 vulnerabilities, 1 warning**, exit code
+`0`.
+
+| Advisory | Crate | Kind | Fix available | Introduced by |
+|---|---|---|---|---|
+| RUSTSEC-2026-0543 | `chrono 0.4.45` | unmaintained | none | `rmcp 3.11.0` and `schemars 1.2.3`, both direct dependencies |
+
+What was done about it: nothing in code, deliberately.
+
+- It is not a vulnerability. The advisory says the crate is unmaintained and
+  suggests `jiff` or `time`; there is no patched version to upgrade to.
+- `chrono` is not a direct dependency and this crate never calls it. It arrives
+  through `rmcp` (protocol timestamps) and `schemars` (schema derivation).
+- Removing it would mean forking or vendoring those two crates, which is a worse
+  trade than tracking their next release. Discord timestamps reach tool results
+  as the ISO strings `twilight-model` already produced, so no untrusted input is
+  parsed by `chrono` on this server's paths.
+- It is recorded, not suppressed: there is no `audit.toml` ignore list, so the
+  warning keeps appearing until `chrono` leaves the dependency graph.
+
+Re-check when `rmcp` or `schemars` ship a release without `chrono`, if the
+advisory is upgraded from "unmaintained" to a vulnerability, or at the next
+scheduled scan — whichever comes first.
 
 ## v1 bot scopes and minimum permissions (Phase 0 decision)
 
