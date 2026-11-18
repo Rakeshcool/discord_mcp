@@ -40,8 +40,30 @@ impl AppService {
         let policy = Policy::from_config(&config.policy)?;
         let discord = TwilightDiscord::new(&config.discord, &token)?;
         // Every Discord request goes through the gate: the raw client is not
-        // stored anywhere a tool can reach it.
-        let discord = PolicyGate::new(Arc::new(discord), policy, Arc::new(LoggingAudit));
+        // stored anywhere a tool can reach it. The budget is persisted so a
+        // restart cannot reset the rolling window.
+        let mutations_enabled = config.policy.write_enabled
+            || config.policy.control_enabled
+            || config.policy.administrative_enabled;
+        let discord = if mutations_enabled {
+            let budget_file = config
+                .policy
+                .autonomy
+                .budget_state_file
+                .as_deref()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(crate::policy::budget::default_state_file);
+            PolicyGate::with_budget_file(
+                Arc::new(discord),
+                policy,
+                Arc::new(LoggingAudit),
+                budget_file,
+            )?
+        } else {
+            // A read-only deployment never consumes the budget, so it neither
+            // opens the state file nor takes the single-owner lock.
+            PolicyGate::new(Arc::new(discord), policy, Arc::new(LoggingAudit))
+        };
         let state = Arc::new(AppState::new(config, token, Arc::new(discord)));
         logging::init(&state.config().logging)?;
         tracing::info!(

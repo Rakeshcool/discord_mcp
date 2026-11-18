@@ -49,6 +49,26 @@ Notable changes to `discord-mcp`, grouped by capability rather than by commit â€
   class flag, the allowlist, the rolling budget, `dry_run` and the audit record.
   A configuration that still contains the key is rejected rather than silently
   ignored.
+- **Sends are budgeted, and the window survives a restart.**
+  `discord_send_message` now consumes `policy.autonomy.max_actions_per_minute`
+  like every other mutation and has a separate per-channel cap,
+  `policy.autonomy.max_sends_per_channel_per_minute` (default 5). The rolling
+  window is written to `policy.autonomy.budget_state_file` (default
+  `%LOCALAPPDATA%\discord-mcp\action-budget.json`) before each request, so
+  restarting the process cannot reset the limit; an unreadable state file fails
+  startup, and `discord_get_capabilities` reports the new limit.
+- **Protected channels and roles.** `policy.protected_channels` and
+  `policy.protected_roles` are allowlist-independent hard stops, checked before
+  the action budget. A protected channel cannot be edited, deleted or given a
+  permission overwrite; a protected thread cannot be edited; a protected role
+  cannot be edited or deleted, even when its guild or channel is allowlisted.
+- **One owner for the persisted budget.** The budget state file now carries an
+  exclusive process-lifetime lock on a sidecar `.lock` file. A second instance
+  with mutations enabled fails startup with a message naming
+  `policy.autonomy.budget_state_file` instead of racing the first and
+  undercounting; read-only instances do not open or lock it. Concurrent
+  instances must use distinct state files, which are independent limits rather
+  than one shared cap.
 
 ## v0.1.0 â€” 2026-11-18
 

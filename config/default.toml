@@ -38,6 +38,8 @@ write_enabled = false                     # writes are opt-in
 # apply the same call.
 guild_allowlist = []                      # empty = every guild the bot can see
 channel_allowlist = []                    # required non-empty when write_enabled
+protected_channels = []                   # never edited or deleted, even if allowlisted
+protected_roles = []                      # never edited or deleted, even if allowlisted
 max_messages_per_read = 100
 max_message_characters = 2000
 allow_mass_mentions = false               # must stay false in v1
@@ -50,8 +52,13 @@ administrative_enabled = false            # roles, guild settings, automod, bulk
 
 [policy.autonomy]
 max_actions_per_minute = 30               # shared budget across all mutations
+max_sends_per_channel_per_minute = 5      # sends have their own per-channel cap
 max_bulk_delete = 50                      # Discord's own ceiling is 100
 require_dry_run = []                      # tools that must be called with dry_run
+# The rolling window is written here so restarting the process cannot reset it.
+# Omit for the per-user default (%LOCALAPPDATA%\discord-mcp\action-budget.json).
+# One running instance owns the file; give each concurrent instance its own path.
+# budget_state_file = "C:\\path\\to\\action-budget.json"
 
 [logging]
 level = "info"                            # trace | debug | info | warn | error

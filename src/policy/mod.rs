@@ -9,6 +9,7 @@
 //! - [`gate`] — the enforcing decorator that wraps the Discord client, so a tool
 //!   cannot reach Discord without passing the rules.
 //! - [`audit`] — content-free records of what policy decided.
+//! - [`budget`] — the rolling mutation window, persisted across restarts.
 //!
 //! Every mutation class is disabled by default. When an operator enables one,
 //! the gate applies its flag, allowlist, budget and audit path before a request
@@ -17,6 +18,7 @@
 //! authority boundary.
 
 pub mod audit;
+pub(crate) mod budget;
 pub mod gate;
 pub mod rules;
 

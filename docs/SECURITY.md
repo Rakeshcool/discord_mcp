@@ -79,7 +79,11 @@ session, and no database — the process holds nothing beyond the current call.
   rejected).
 - **Destructive tools are class-gated, not absent.** Delete, channel, thread,
   invite and overwrite tools are registered and run only when their class flag,
-  allowlist, budget and audit path all pass. The set stays bounded: no bans,
+  allowlist, budget and audit path all pass. `policy.protected_channels` and
+  `policy.protected_roles` add a second stop that the allowlist cannot widen:
+  protected channels refuse edit, deletion, permission overwrites and thread
+  edits, protected roles refuse edit and deletion, and both are checked before
+  the budget so a refusal costs no action. The set stays bounded: no bans,
   kicks, member or nickname management, webhooks, emoji management, guild
   settings, automod or channel reordering.
 - **There is no approval prompt, and the server does not claim one.** MCP
@@ -139,12 +143,20 @@ session, and no database — the process holds nothing beyond the current call.
   content. Reads record allowances and policy denials; a read that Discord
   rejects is an error result without a separate audit record. A dry run records
   nothing, because nothing was attempted.
-- **Mutations are budgeted.** `policy.autonomy.max_actions_per_minute` (default
-  30) is a rolling 60-second window shared by the 22 mutations that accept
-  `dry_run`; the action past it is `POLICY_BLOCKED` and no request is built.
-  `discord_send_message` is audited but not counted, because it has no dry-run
-  form. `policy.autonomy.require_dry_run` can additionally force named tools to
-  be planned before a real call.
+- **Mutations are budgeted, and a restart does not reset the budget.**
+  `policy.autonomy.max_actions_per_minute` (default 30) is a rolling 60-second
+  window shared by every mutation, `discord_send_message` included; the action
+  past it is `POLICY_BLOCKED` and no request is built. Sends also draw on a
+  per-channel window, `policy.autonomy.max_sends_per_channel_per_minute`
+  (default 5), so one channel cannot absorb the shared allowance. The windows are
+  written to `policy.autonomy.budget_state_file` after each consumed action; an
+  unreadable or malformed file stops startup rather than silently starting an
+  empty window, and a write failure refuses the action. A process with mutations
+  enabled holds an exclusive ownership lock on that file for its lifetime, so a
+  second process cannot read and overwrite the same window: it fails startup and
+  must be given a distinct `budget_state_file`. Read-only processes do not open
+  the file. `policy.autonomy.require_dry_run` can additionally force named tools
+  to be planned before a real call.
 - **A dry run cannot touch Discord.** It runs every argument and local policy
   check, then returns `{"dry_run":true,"action":"…"}` before the budget and
   before any request. That is also its limit: a dry run cannot detect a missing

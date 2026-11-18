@@ -51,11 +51,15 @@ covers the threat model.
 | `policy.write_enabled = false` (default) | `discord_send_message`, `discord_edit_message`, the reaction tools and the pin tools refuse with `POLICY_BLOCKED` |
 | `policy.control_enabled = false` (default) | `discord_delete_message` and every channel, permission, thread and invite tool refuse; enabling it requires a channel allowlist |
 | `policy.administrative_enabled = false` (default) | `discord_bulk_delete_messages` and every role tool refuse; enabling it requires a guild allowlist |
-| `policy.autonomy.max_actions_per_minute` (default 30) | Shared budget across all mutations; the request past it is `POLICY_BLOCKED` and is never sent |
+| `policy.autonomy.max_actions_per_minute` (default 30) | Shared budget across all mutations, including sends; the request past it is `POLICY_BLOCKED` and is never sent |
+| `policy.autonomy.max_sends_per_channel_per_minute` (default 5) | Messages one channel may receive per rolling minute; the next send is `POLICY_BLOCKED` |
+| `policy.autonomy.budget_state_file` | File carrying the rolling windows across restarts; omitted means `%LOCALAPPDATA%\discord-mcp\action-budget.json`. Exactly one running process may own it; a second instance with mutations enabled fails startup, and read-only instances do not open it |
 | `policy.autonomy.max_bulk_delete` (default 50) | Ceiling for one `discord_bulk_delete_messages` call, on top of Discord's 100 and 14-day rules |
 | `policy.autonomy.require_dry_run` | Tools listed here refuse unless called with `dry_run: true`; a name that is not a classified tool is a configuration error, not a silent no-op |
 | `policy.guild_allowlist` | When non-empty: guild tools refuse unlisted guilds, channel tools resolve the channel's guild first (one extra request) and refuse it when unlisted, and a direct-message channel is refused because its guild cannot be shown to be allowed |
 | `policy.channel_allowlist` | When non-empty: channel tools refuse unlisted channels. Enabling writes requires it to be non-empty |
+| `policy.protected_channels` | Channels no tool may edit or delete, even when allowlisted. Refused before the budget; a refusal spends no action |
+| `policy.protected_roles` | Roles no tool may edit or delete, even when allowlisted. Refused before the budget |
 | `policy.max_messages_per_read` | Ceiling for `discord_get_messages.limit` |
 | `policy.max_message_characters` | Ceiling for `discord_send_message.content`, counted in characters |
 | `policy.max_concurrent_requests` | Caps in-flight Discord requests; calls queue rather than fail |
@@ -77,7 +81,7 @@ Reports what this build may do before a client plans a change: which classes
 policy enables and the autonomy limits in force. It takes no arguments.
 
 ```json
-{"server":"discord-mcp","version":"0.1.0","bot":{"id":"…","username":"discord-mcp"},"enabled":{"read":true,"write":false,"control":false,"administrative":false},"limits":{"max_actions_per_minute":30,"max_bulk_delete":50,"require_dry_run":[]}}
+{"server":"discord-mcp","version":"0.1.0","bot":{"id":"…","username":"discord-mcp"},"enabled":{"read":true,"write":false,"control":false,"administrative":false},"limits":{"max_actions_per_minute":30,"max_sends_per_channel_per_minute":5,"max_bulk_delete":50,"require_dry_run":[]}}
 ```
 
 The `bot` field identifies the account the token belongs to, which is what makes
@@ -209,8 +213,9 @@ Returns one object of the shape shown above.
 ## 3. Message mutations
 
 All eight take the same policy path: feature flag, channel allowlist, guild check
-when a guild allowlist narrows scope, action budget, one audited attempt. None is
-retried by this server.
+when a guild allowlist narrows scope, action budget, one audited attempt. Every
+one consumes the shared budget; `discord_send_message` additionally consumes its
+channel's send budget. None is retried by this server.
 
 | Tool | Arguments | Flag |
 |---|---|---|
@@ -253,6 +258,10 @@ Returns the created message, in the same shape as `discord_get_message`:
 
 What applies to every attempt:
 
+- **The send is budgeted.** It consumes one action from the shared
+  `max_actions_per_minute` window and one from the channel's
+  `max_sends_per_channel_per_minute` window. Either limit refuses the send before
+  a request is built, and both windows are persisted across restarts.
 - **Mentions are neutralised.** `@everyone` and `@here` get a zero-width space
   after the `@`; user and role mentions get one after the `<`. Discord then
   neither resolves nor notifies them. The request also carries `allowed_mentions`
@@ -278,7 +287,11 @@ What applies to every attempt:
 
 These tools change server structure. Every one of them needs
 `policy.control_enabled = true`, its channel on `policy.channel_allowlist`, and an
-action from the shared per-minute budget; each accepts `dry_run`. A dry run
+action from the shared per-minute budget; each accepts `dry_run`. A channel on
+`policy.protected_channels` refuses `discord_edit_channel`,
+`discord_delete_channel` and both permission-overwrite tools, and a protected
+thread refuses `discord_edit_thread`, regardless of the allowlist and before the
+budget. A dry run
 validates arguments and everything policy knows locally, sends nothing and spends
 no budget. Scope that needs a lookup — a guild ID, a thread's parent, an invite's
 channel — is checked on the real call, before the mutation is sent.
@@ -349,7 +362,9 @@ channel; only a refusal before resolution is recorded without a target.
 Roles are guild-wide configuration, so every tool here needs
 `policy.administrative_enabled = true`, its guild on `policy.guild_allowlist`, and
 an action from the shared budget; each accepts `dry_run`. Permission names resolve
-to Discord bits, and `ADMINISTRATOR` cannot be granted.
+to Discord bits, and `ADMINISTRATOR` cannot be granted. A role on
+`policy.protected_roles` refuses `discord_edit_role` and `discord_delete_role`
+before the budget, even when its guild is allowlisted.
 
 ### Discord permissions and role hierarchy
 
@@ -460,10 +475,17 @@ is not, and a client should branch on the code.
   `discord.request_timeout_seconds`, so a long limit surfaces as `TIMEOUT`.
 - **Writes** are never retried after an ambiguous outcome (see above).
 - **Mutations share one budget.** `policy.autonomy.max_actions_per_minute`
-  (default 30) is a rolling 60-second window shared by the 22 mutations that
-  accept `dry_run`; the action past the budget is `POLICY_BLOCKED` and no request
-  is made. Dry runs do not consume it. `discord_send_message` is audited but not
-  counted against the budget, because it has no dry-run form.
+  (default 30) is a rolling 60-second window shared by every mutation, sends
+  included; the action past the budget is `POLICY_BLOCKED` and no request is
+  made. Dry runs do not consume it. Sends additionally draw on
+  `policy.autonomy.max_sends_per_channel_per_minute` (default 5), a separate
+  window per channel. The windows are persisted to
+  `policy.autonomy.budget_state_file` after each consumed action, so restarting
+  the process cannot reset them; a state file that cannot be read is a startup
+  error. The file has one live owner: a process with mutations enabled holds an
+  exclusive lock, and a second process on the same path fails startup. Read-only
+  processes do not open it. Each concurrent instance needs its own
+  `budget_state_file`, and those windows are independent limits.
 - Each attempt, including a rate-limit wait inside it, is bounded by
   `discord.request_timeout_seconds` (default 20). Over HTTP the whole request is
   additionally bounded by `http.request_timeout_seconds` (default 30), and a

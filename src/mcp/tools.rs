@@ -471,6 +471,7 @@ struct EnabledClasses {
 #[derive(Serialize)]
 struct AutonomyLimits {
     max_actions_per_minute: u16,
+    max_sends_per_channel_per_minute: u16,
     max_bulk_delete: u16,
     require_dry_run: Vec<String>,
 }
@@ -727,7 +728,7 @@ impl DiscordMcpServer {
 
     #[tool(
         name = "discord_send_message",
-        description = "Send one message to a Discord channel on policy.channel_allowlist. Writes are disabled by default; mentions are neutralised, the length limit applies, and every attempt is audited.",
+        description = "Send one message to a Discord channel on policy.channel_allowlist. Writes are disabled by default; mentions are neutralised, the length limit applies, the send counts against policy.autonomy.max_actions_per_minute and max_sends_per_channel_per_minute, and every attempt is audited.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -774,6 +775,9 @@ impl DiscordMcpServer {
                 },
                 limits: AutonomyLimits {
                     max_actions_per_minute: policy.autonomy.max_actions_per_minute,
+                    max_sends_per_channel_per_minute: policy
+                        .autonomy
+                        .max_sends_per_channel_per_minute,
                     max_bulk_delete: policy.autonomy.max_bulk_delete,
                     require_dry_run: policy.autonomy.require_dry_run.clone(),
                 },

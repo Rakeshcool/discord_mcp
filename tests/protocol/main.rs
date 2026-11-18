@@ -8,6 +8,7 @@ mod http_client;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -158,11 +159,23 @@ fn tool_error_text(response: &Value) -> &str {
         .unwrap_or_else(|| panic!("no text content in {response}"))
 }
 
+static CONFIG_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+
 fn temp_config(name: &str, text: &str) -> PathBuf {
+    let sequence = CONFIG_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
-        "discord-mcp-protocol-{}-{name}.toml",
+        "discord-mcp-protocol-{}-{name}-{sequence}.toml",
         std::process::id()
     ));
+    // Every server owns its own budget state file. Protocol tests start several
+    // servers with mutation classes enabled, and the default per-user file allows
+    // only one owner at a time.
+    let budget = path.with_file_name(format!(
+        "discord-mcp-protocol-{}-{name}-{sequence}-budget.json",
+        std::process::id()
+    ));
+    let budget = budget.to_string_lossy().replace('\\', "/");
+    let text = format!("{text}\n[policy.autonomy]\nbudget_state_file = \"{budget}\"\n");
     std::fs::write(&path, text).expect("write the temporary configuration");
     path
 }

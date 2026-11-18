@@ -114,12 +114,26 @@ guild_allowlist = ["1572365819281932408"]
 ```
 
 Every mutation except `discord_send_message` accepts `dry_run`, which returns the
-planned action without contacting Discord and without spending budget. The
-mutations that accept a dry run share `policy.autonomy.max_actions_per_minute`;
-`discord_send_message` is audited but not counted against it. No mutation is
-retried after an ambiguous outcome. `policy.autonomy.require_dry_run` can require the
-dry-run step for named tools, and `--read-only` (or `DISCORD_MCP_READ_ONLY=1`)
-turns every mutation class off for a session.
+planned action without contacting Discord and without spending budget. Every real
+mutation, including `discord_send_message`, draws on
+`policy.autonomy.max_actions_per_minute`; sends also have their own
+`policy.autonomy.max_sends_per_channel_per_minute` (default 5) so one busy channel
+cannot consume the whole allowance. No mutation is retried after an ambiguous
+outcome. `policy.autonomy.require_dry_run` can require the dry-run step for named
+tools, and `--read-only` (or `DISCORD_MCP_READ_ONLY=1`) turns every mutation class
+off for a session.
+
+The rolling window is written to `policy.autonomy.budget_state_file` after every
+consumed action, so restarting the process does not reset it. Omit the key to use
+`%LOCALAPPDATA%\discord-mcp\action-budget.json`; an unreadable or malformed file
+stops startup instead of starting with an empty window.
+
+Exactly one running process may own that file. A process with any mutation class
+enabled takes an exclusive lock and keeps it for its lifetime; a second process
+on the same path refuses to start and names `budget_state_file`, instead of
+racing the first and undercounting. Read-only processes never open or lock it. To
+run instances concurrently, give each its own `budget_state_file` — those windows
+are separate limits, not one shared cap.
 
 There is no confirmation prompt. The approval model is the class flag, the
 allowlist, the rolling budget, `dry_run` as the plan step and the audit record of
@@ -134,6 +148,13 @@ Structural tools stay inside the allowlist: a thread is checked through its
 parent channel, an invite through the channel it points at, and a channel these
 tools create must be added to `channel_allowlist` before anything may edit or
 delete it.
+
+`policy.protected_channels` and `policy.protected_roles` are a second, harder
+boundary: a listed channel cannot be edited, deleted or given a new permission
+overwrite, and a listed thread cannot be edited; a listed role cannot be edited
+or deleted. Protection is independent of the allowlists and is checked before
+the action budget, so it applies even to an allowlisted ID and a refusal spends
+nothing.
 
 ### Roles
 

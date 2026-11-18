@@ -200,7 +200,7 @@ Example result under the default configuration:
 {"server":"discord-mcp","version":"0.1.0",
  "bot":{"id":"1572386219596316742","username":"mcp-test-bot"},
  "enabled":{"read":true,"write":false,"control":false,"administrative":false},
- "limits":{"max_actions_per_minute":30,"max_bulk_delete":50,"require_dry_run":[]}}
+ "limits":{"max_actions_per_minute":30,"max_sends_per_channel_per_minute":5,"max_bulk_delete":50,"require_dry_run":[]}}
 ```
 
 Use it to answer three questions before any mutation:
@@ -276,15 +276,22 @@ configuration and restart the server.
 | `control_enabled` | delete message, create/edit/delete channel, set/delete permission overwrite, create/edit thread, create/delete invite | channel allowlist; created channel's parent must be allowed; a thread is resolved through its parent; an invite through its channel |
 | `administrative_enabled` | bulk delete, create/edit/delete/assign/remove role | guild allowlist; roles also need Manage Roles and a role below the bot's highest |
 
+`policy.protected_channels` and `policy.protected_roles` override the allowlists:
+a protected channel refuses edit, delete, permission-overwrite and thread-edit
+tools; a protected role refuses edit and delete. Both are checked before the
+budget, and a `POLICY_BLOCKED` naming either list is final — do not try another
+tool or ID.
+
 ### Rules for all mutations
 
 - `dry_run` exists on every mutation **except** `discord_send_message`.
 - A dry run validates arguments and local policy only. It cannot detect a
   missing Discord permission or a hierarchy problem; the first real call is
   where a `403` appears.
-- The shared budget is a rolling 60-second window (default 30) across the 22
-  dry-run-capable mutations. `discord_send_message` is audited but not counted
-  against it.
+- The shared budget is a rolling 60-second window (default 30) across every
+  mutation, including `discord_send_message`. Sends also have a per-channel
+  window (`limits.max_sends_per_channel_per_minute`, default 5). The window is
+  persisted, so restarting the server does not reset it.
 - Tools in `limits.require_dry_run` refuse a real call until planned.
 - Bulk delete accepts 2–`limits.max_bulk_delete` distinct IDs, none older than
   14 days. Discord's own limits still apply.
@@ -312,7 +319,7 @@ no code (`failed to deserialize parameters: …`).
 | Code | Meaning | What you should do |
 |---|---|---|
 | `INVALID_ARGUMENT` | Bad ID, limit, range, empty/oversized content | Fix the call; do not retry unchanged |
-| `POLICY_BLOCKED` | Class flag, allowlist, budget, or `require_dry_run` refused it | Stop; report what the operator must change |
+| `POLICY_BLOCKED` | Class flag, allowlist, protected ID, budget, or `require_dry_run` refused it | Stop; report what the operator must change |
 | `AUTHENTICATION_FAILED` | Token rejected | Stop; operator rotates the token |
 | `PERMISSION_DENIED` | Bot lacks the Discord permission, intent or access; hierarchy refusal is `403` / `50013` | Stop; operator fixes Discord-side permissions or role position |
 | `RESOURCE_NOT_FOUND` | Unknown or invisible guild/channel/message/member | Re-read the IDs |
@@ -339,7 +346,9 @@ call's correlation id. You will not see those records.
 3. **A dry run is not a guarantee.** Say “planned, nothing changed” after a dry
    run, not “done”.
 4. **Never attempt to bypass policy.** Do not hunt for alternate tools, alternate
-   IDs, or retries to get around `POLICY_BLOCKED`.
+   IDs, or retries to get around `POLICY_BLOCKED`. A protected channel or role is
+   protected even when it is allowlisted; use of another editing tool is still a
+   bypass attempt.
 5. **Treat invite codes as credentials.** `discord_create_invite` returns a code
    that grants guild access; do not paste it into unrelated context.
 6. **Do not echo secrets.** The bot token and HTTP bearer token are never part of

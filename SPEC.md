@@ -109,8 +109,8 @@ MCP Client
 
 5. **Policy layer**
    - Tool allowlist and risk class: read, write, destructive (control), administrative.
-   - Guild/channel allowlists, and the class flag that must be true for a tool to run.
-   - Shared rolling action budget and optional `require_dry_run` per tool.
+   - Guild/channel allowlists, protected channel and role IDs that no allowlist can widen, and the class flag that must be true for a tool to run.
+   - Shared rolling action budget, a per-channel send budget, persistence across restarts, and optional `require_dry_run` per tool.
    - Content limits and mention neutralisation.
    - One content-free audit record per real attempt.
 
@@ -187,9 +187,14 @@ outgoing content is neutralised.
   writes no audit record. It cannot see a missing Discord permission or a
   hierarchy problem; the first real call is where that `403` appears.
 - **Budget.** `policy.autonomy.max_actions_per_minute` (default 30) is a rolling
-  60-second window shared by the 22 `dry_run`-capable mutations. The action past
-  it is `POLICY_BLOCKED` and is never sent. `discord_send_message` has no dry-run
-  form and is not counted against the budget.
+  60-second window shared by every mutation, including `discord_send_message`.
+  The action past it is `POLICY_BLOCKED` and is never sent. Sends also draw on
+  `policy.autonomy.max_sends_per_channel_per_minute` (default 5). The windows are
+  persisted to `policy.autonomy.budget_state_file` so a process restart cannot
+  reset them; an unreadable state file is a startup error. One running process
+  owns the file through an exclusive lock and a second instance with mutations
+  enabled fails startup; concurrent instances need distinct state files, which
+  are independent limits.
 - **Required dry runs.** `policy.autonomy.require_dry_run` lists tools that refuse
   a real call; a name that is not a classified tool is a configuration error.
 - **Audit.** Each real attempt produces exactly one content-free record
@@ -299,6 +304,8 @@ control_enabled = false
 administrative_enabled = false
 guild_allowlist = []
 channel_allowlist = []
+protected_channels = []
+protected_roles = []
 max_messages_per_read = 100
 max_message_characters = 2000
 allow_mass_mentions = false
@@ -306,6 +313,7 @@ max_concurrent_requests = 8
 
 [policy.autonomy]
 max_actions_per_minute = 30
+max_sends_per_channel_per_minute = 5
 max_bulk_delete = 50
 require_dry_run = []
 
