@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use discord_mcp::config::schema::DiscordConfig;
 use discord_mcp::discord::DiscordApi;
 use discord_mcp::discord::adapter::TwilightDiscord;
-use discord_mcp::discord::client::MEMBERS_PAGE_MAX;
+use discord_mcp::discord::client::{MEMBERS_PAGE_MAX, MutationOutcome};
 use discord_mcp::discord::ids::{ChannelId, GuildId, MessageId};
 use discord_mcp::discord::models::{ChannelKind, MessageQuery};
 use discord_mcp::error::ErrorCategory;
@@ -648,4 +648,124 @@ async fn a_rate_limited_send_waits_out_the_limit_and_posts_once() {
         2,
         "429, then exactly one successful post"
     );
+}
+
+#[tokio::test]
+async fn edit_message_patches_the_content_and_maps_the_answer() {
+    let mock = MockDiscord::start(|request| {
+        assert_eq!(request.method, "PATCH");
+        assert_eq!(request.route(), "/api/v10/channels/4004/messages/9009");
+        assert_eq!(request.json()["content"], "edited");
+        MockResponse::json(message("9009", "edited"))
+    })
+    .await;
+    let api = adapter_for(&mock);
+    let message_id = MessageId::parse("9009").expect("valid message id");
+
+    let outcome = api
+        .edit_message(&channel(CHANNEL_ID), &message_id, "edited", false)
+        .await
+        .expect("the edit must succeed");
+
+    match outcome {
+        MutationOutcome::Applied(edited) => {
+            assert_eq!(edited.content.as_deref(), Some("edited"));
+        }
+        MutationOutcome::Planned => panic!("a real call cannot be planned"),
+    }
+}
+
+#[tokio::test]
+async fn delete_message_sends_one_delete_and_is_never_retried() {
+    let mock = MockDiscord::start(|request| {
+        assert_eq!(request.method, "DELETE");
+        assert_eq!(request.route(), "/api/v10/channels/4004/messages/9009");
+        MockResponse::json("").status(204)
+    })
+    .await;
+    let api = adapter_with(&mock, 2, 3);
+    let message_id = MessageId::parse("9009").expect("valid message id");
+
+    let outcome = api
+        .delete_message(&channel(CHANNEL_ID), &message_id, false)
+        .await
+        .expect("the delete must succeed");
+
+    assert_eq!(outcome, MutationOutcome::Applied(()));
+    assert_eq!(mock.request_count(), 1, "a mutation is never retried");
+}
+
+#[tokio::test]
+async fn bulk_delete_posts_every_message_id() {
+    let mock = MockDiscord::start(|request| {
+        assert_eq!(request.method, "POST");
+        assert_eq!(
+            request.route(),
+            "/api/v10/channels/4004/messages/bulk-delete"
+        );
+        let ids = request.json()["messages"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(ids.len(), 2);
+        MockResponse::json("").status(204)
+    })
+    .await;
+    let api = adapter_for(&mock);
+    let ids = [
+        MessageId::parse("9001").expect("valid message id"),
+        MessageId::parse("9002").expect("valid message id"),
+    ];
+
+    let outcome = api
+        .bulk_delete_messages(&channel(CHANNEL_ID), &ids, false)
+        .await
+        .expect("the bulk delete must succeed");
+
+    assert_eq!(outcome, MutationOutcome::Applied(2));
+}
+
+#[tokio::test]
+async fn add_reaction_targets_the_reaction_route() {
+    let mock = MockDiscord::start(|request| {
+        assert_eq!(request.method, "PUT");
+        assert!(
+            request
+                .route()
+                .starts_with("/api/v10/channels/4004/messages/9009/reactions/"),
+            "unexpected route: {}",
+            request.route()
+        );
+        MockResponse::json("").status(204)
+    })
+    .await;
+    let api = adapter_for(&mock);
+    let message_id = MessageId::parse("9009").expect("valid message id");
+
+    let outcome = api
+        .add_reaction(&channel(CHANNEL_ID), &message_id, "👋", false)
+        .await
+        .expect("the reaction must be added");
+
+    assert_eq!(outcome, MutationOutcome::Applied(()));
+}
+
+#[tokio::test]
+async fn a_malformed_custom_emoji_is_an_argument_error() {
+    let mock = MockDiscord::start(|_| MockResponse::json("")).await;
+    let api = adapter_for(&mock);
+    let message_id = MessageId::parse("9009").expect("valid message id");
+
+    let error = api
+        .add_reaction(
+            &channel(CHANNEL_ID),
+            &message_id,
+            "wave:not-a-number",
+            false,
+        )
+        .await
+        .expect_err("a non-numeric custom id must be refused");
+
+    assert_eq!(error.category(), ErrorCategory::InvalidArgument);
+    assert_eq!(mock.request_count(), 0);
 }

@@ -76,8 +76,8 @@ lists the variable names.
 
 ## Writes
 
-`discord_send_message` is **off by default**. Turning it on needs both settings,
-and validation refuses the first without the second:
+Sending is **off by default**. Turning it on needs both settings, and validation
+refuses the first without the second:
 
 ```toml
 [policy]
@@ -85,9 +85,12 @@ write_enabled = true
 channel_allowlist = ["1572365820133118035"]
 ```
 
-The tool posts plain text to those channels only. Mentions are neutralised, the
-length limit applies, and each attempt writes one audit record to stderr.
-Nothing can edit, delete, react or bulk-delete.
+Message editing, reactions and pins follow `write_enabled`; deleting a message
+needs `control_enabled`, bulk delete needs `administrative_enabled`, and each
+class has its own allowlist requirement. Every mutation is audited, limited by a
+shared per-minute budget, and never retried. `--read-only` (or
+`DISCORD_MCP_READ_ONLY=1`) overrides the file and disables all of them for a
+session.
 
 ## Streamable HTTP
 

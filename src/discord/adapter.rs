@@ -9,9 +9,10 @@
 //!   type escapes this module,
 //! - clamping page sizes to Discord's maxima.
 //!
-//! One method writes: `send_message`. It posts with mentions explicitly
-//! disabled and without retries, because a retried `POST` may duplicate a
-//! message. Nothing here can edit or delete.
+//! Every mutation goes through `send_once`: one attempt, no retry, because a
+//! repeated `POST`/`PATCH` after a timeout may apply twice. Reads use `send`,
+//! which retries transient failures within the configured budget. Dry runs never
+//! reach this module: the policy gate answers them itself.
 
 use std::future::{Future, IntoFuture};
 use std::time::Duration;
@@ -19,22 +20,25 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use twilight_http::Client;
+use twilight_http::request::channel::reaction::RequestReactionType;
 use twilight_http::response::ResponseFuture;
 use twilight_http::response::marker::ListBody;
 use twilight_model::channel::message::Message;
 use twilight_model::channel::{Channel, ChannelType};
-use twilight_model::guild::{Guild, Member};
+use twilight_model::guild::{Guild, Member, Permissions};
 use twilight_model::id::Id;
 use twilight_model::id::marker::{ChannelMarker, GuildMarker, MessageMarker, UserMarker};
-use twilight_model::user::CurrentUserGuild;
+use twilight_model::user::{CurrentUser, CurrentUserGuild};
 
 use crate::config::schema::{DiscordConfig, is_loopback_host};
-use crate::discord::client::{DiscordApi, GUILDS_PAGE_MAX, MEMBERS_PAGE_MAX, MESSAGES_PAGE_MAX};
+use crate::discord::client::{
+    DiscordApi, GUILDS_PAGE_MAX, MEMBERS_PAGE_MAX, MESSAGES_PAGE_MAX, MutationOutcome,
+};
 use crate::discord::errors::{map_discord_error, read_body_error};
 use crate::discord::ids::{ChannelId, GuildId, MessageId, UserId};
 use crate::discord::models::{
-    ChannelKind, ChannelSummary, GuildDetail, GuildSummary, MemberSummary, MessageAuthor,
-    MessageQuery, MessageSummary, Page,
+    BotIdentity, ChannelKind, ChannelSummary, GuildDetail, GuildPermissions, GuildSummary,
+    MemberSummary, MessageAuthor, MessageQuery, MessageSummary, Page,
 };
 use crate::discord::rate_limit::{backoff, is_transient};
 use crate::error::{AppError, ErrorCategory};
@@ -227,6 +231,11 @@ where
 {
     let response = future.await.map_err(AttemptError::Request)?;
     response.model().await.map_err(|_| AttemptError::Body)
+}
+
+/// Await a request whose answer has no model the caller needs.
+async fn read_empty<T: Unpin>(future: ResponseFuture<T>) -> Result<(), AttemptError> {
+    future.await.map(|_| ()).map_err(AttemptError::Request)
 }
 
 /// Await a request and read its JSON array.
@@ -445,6 +454,289 @@ impl DiscordApi for TwilightDiscord {
 
         Ok(message_summary(message))
     }
+
+    async fn bot_identity(&self) -> Result<BotIdentity, AppError> {
+        let user: CurrentUser = self
+            .send("discord_get_capabilities", || {
+                read_one(IntoFuture::into_future(self.client.current_user()))
+            })
+            .await?;
+        Ok(BotIdentity {
+            id: user_id(user.id),
+            username: user.name,
+        })
+    }
+
+    async fn guild_permissions(&self, guild_id: &GuildId) -> Result<GuildPermissions, AppError> {
+        let user: CurrentUser = self
+            .send("discord_get_capabilities", || {
+                read_one(IntoFuture::into_future(self.client.current_user()))
+            })
+            .await?;
+        let guild: Guild = self
+            .send("discord_get_capabilities", || {
+                read_one(IntoFuture::into_future(
+                    self.client.guild(Id::new(guild_id.get())),
+                ))
+            })
+            .await?;
+        let member: Member = self
+            .send("discord_get_capabilities", || {
+                read_one(IntoFuture::into_future(
+                    self.client.guild_member(Id::new(guild_id.get()), user.id),
+                ))
+            })
+            .await?;
+
+        // `@everyone` is the role whose id equals the guild id. A member's
+        // permissions are the union of it and every role they hold; channel
+        // overwrites are a per-channel question and are not applied here.
+        let mut held = Permissions::empty();
+        for role in &guild.roles {
+            let is_everyone = role.id.get() == guild.id.get();
+            let is_held = member.roles.contains(&role.id);
+            if is_everyone || is_held {
+                held |= role.permissions;
+            }
+        }
+
+        Ok(GuildPermissions {
+            guild_id: *guild_id,
+            permissions: permission_names(held),
+            administrator: held.contains(Permissions::ADMINISTRATOR),
+        })
+    }
+
+    async fn edit_message(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        content: &str,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<MessageSummary>, AppError> {
+        let message: Message = self
+            .send_once("discord_edit_message", || {
+                read_one(IntoFuture::into_future(
+                    self.client
+                        .update_message(Id::new(channel_id.get()), Id::new(message_id.get()))
+                        .content(Some(content)),
+                ))
+            })
+            .await?;
+        Ok(MutationOutcome::Applied(message_summary(message)))
+    }
+
+    async fn delete_message(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.send_once("discord_delete_message", || {
+            read_empty(IntoFuture::into_future(self.client.delete_message(
+                Id::new(channel_id.get()),
+                Id::new(message_id.get()),
+            )))
+        })
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn bulk_delete_messages(
+        &self,
+        channel_id: &ChannelId,
+        message_ids: &[MessageId],
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<u64>, AppError> {
+        let ids: Vec<Id<MessageMarker>> = message_ids.iter().map(|id| Id::new(id.get())).collect();
+        self.send_once("discord_bulk_delete_messages", || {
+            read_empty(IntoFuture::into_future(
+                self.client.delete_messages(Id::new(channel_id.get()), &ids),
+            ))
+        })
+        .await?;
+        Ok(MutationOutcome::Applied(ids.len() as u64))
+    }
+
+    async fn add_reaction(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        emoji: &str,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        let emoji = reaction_type(emoji)?;
+        self.send_once("discord_add_reaction", || {
+            read_empty(IntoFuture::into_future(self.client.create_reaction(
+                Id::new(channel_id.get()),
+                Id::new(message_id.get()),
+                &emoji,
+            )))
+        })
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn remove_reaction(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        emoji: &str,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        let emoji = reaction_type(emoji)?;
+        self.send_once("discord_remove_reaction", || {
+            read_empty(IntoFuture::into_future(
+                self.client.delete_current_user_reaction(
+                    Id::new(channel_id.get()),
+                    Id::new(message_id.get()),
+                    &emoji,
+                ),
+            ))
+        })
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn clear_reactions(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.send_once("discord_clear_reactions", || {
+            read_empty(IntoFuture::into_future(self.client.delete_all_reactions(
+                Id::new(channel_id.get()),
+                Id::new(message_id.get()),
+            )))
+        })
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn pin_message(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.send_once("discord_pin_message", || {
+            read_empty(IntoFuture::into_future(
+                self.client
+                    .create_pin(Id::new(channel_id.get()), Id::new(message_id.get())),
+            ))
+        })
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn unpin_message(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.send_once("discord_unpin_message", || {
+            read_empty(IntoFuture::into_future(
+                self.client
+                    .delete_pin(Id::new(channel_id.get()), Id::new(message_id.get())),
+            ))
+        })
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+}
+
+/// Turn a tool's emoji argument into a reaction target.
+///
+/// `name:id` is a custom emoji, anything else is a unicode glyph. Nothing is
+/// inferred from the shape of the string beyond that: a malformed custom emoji
+/// is an argument error, not a guess.
+fn reaction_type(emoji: &str) -> Result<RequestReactionType<'_>, AppError> {
+    let emoji = emoji.trim();
+    if emoji.is_empty() {
+        return Err(AppError::invalid_argument("`emoji` must not be empty"));
+    }
+    if let Some((name, id)) = emoji.split_once(':') {
+        if name.is_empty() || id.is_empty() {
+            return Err(AppError::invalid_argument(
+                "`emoji` must be `name:id` for a custom emoji, or a unicode glyph",
+            ));
+        }
+        let id = id.parse::<u64>().map_err(|_| {
+            AppError::invalid_argument("`emoji` custom id must be a numeric emoji ID")
+        })?;
+        return Ok(RequestReactionType::Custom {
+            id: Id::new(id),
+            name: Some(name),
+        });
+    }
+    if emoji.chars().count() > 32 {
+        return Err(AppError::invalid_argument(
+            "`emoji` is too long to be a unicode reaction",
+        ));
+    }
+    Ok(RequestReactionType::Unicode { name: emoji })
+}
+
+/// The names of the permissions held, in Discord's documented bit order.
+fn permission_names(held: Permissions) -> Vec<String> {
+    const NAMED: [(Permissions, &str); 40] = [
+        (Permissions::CREATE_INVITE, "CREATE_INSTANT_INVITE"),
+        (Permissions::KICK_MEMBERS, "KICK_MEMBERS"),
+        (Permissions::BAN_MEMBERS, "BAN_MEMBERS"),
+        (Permissions::ADMINISTRATOR, "ADMINISTRATOR"),
+        (Permissions::MANAGE_CHANNELS, "MANAGE_CHANNELS"),
+        (Permissions::MANAGE_GUILD, "MANAGE_GUILD"),
+        (Permissions::ADD_REACTIONS, "ADD_REACTIONS"),
+        (Permissions::VIEW_AUDIT_LOG, "VIEW_AUDIT_LOG"),
+        (Permissions::PRIORITY_SPEAKER, "PRIORITY_SPEAKER"),
+        (Permissions::STREAM, "STREAM"),
+        (Permissions::VIEW_CHANNEL, "VIEW_CHANNEL"),
+        (Permissions::SEND_MESSAGES, "SEND_MESSAGES"),
+        (Permissions::SEND_TTS_MESSAGES, "SEND_TTS_MESSAGES"),
+        (Permissions::MANAGE_MESSAGES, "MANAGE_MESSAGES"),
+        (Permissions::EMBED_LINKS, "EMBED_LINKS"),
+        (Permissions::ATTACH_FILES, "ATTACH_FILES"),
+        (Permissions::READ_MESSAGE_HISTORY, "READ_MESSAGE_HISTORY"),
+        (Permissions::MENTION_EVERYONE, "MENTION_EVERYONE"),
+        (Permissions::USE_EXTERNAL_EMOJIS, "USE_EXTERNAL_EMOJIS"),
+        (Permissions::VIEW_GUILD_INSIGHTS, "VIEW_GUILD_INSIGHTS"),
+        (Permissions::CONNECT, "CONNECT"),
+        (Permissions::SPEAK, "SPEAK"),
+        (Permissions::MUTE_MEMBERS, "MUTE_MEMBERS"),
+        (Permissions::DEAFEN_MEMBERS, "DEAFEN_MEMBERS"),
+        (Permissions::MOVE_MEMBERS, "MOVE_MEMBERS"),
+        (Permissions::USE_VAD, "USE_VAD"),
+        (Permissions::CHANGE_NICKNAME, "CHANGE_NICKNAME"),
+        (Permissions::MANAGE_NICKNAMES, "MANAGE_NICKNAMES"),
+        (Permissions::MANAGE_ROLES, "MANAGE_ROLES"),
+        (Permissions::MANAGE_WEBHOOKS, "MANAGE_WEBHOOKS"),
+        (
+            Permissions::MANAGE_GUILD_EXPRESSIONS,
+            "MANAGE_GUILD_EXPRESSIONS",
+        ),
+        (Permissions::USE_SLASH_COMMANDS, "USE_APPLICATION_COMMANDS"),
+        (Permissions::REQUEST_TO_SPEAK, "REQUEST_TO_SPEAK"),
+        (Permissions::MANAGE_EVENTS, "MANAGE_EVENTS"),
+        (Permissions::MANAGE_THREADS, "MANAGE_THREADS"),
+        (Permissions::CREATE_PUBLIC_THREADS, "CREATE_PUBLIC_THREADS"),
+        (
+            Permissions::CREATE_PRIVATE_THREADS,
+            "CREATE_PRIVATE_THREADS",
+        ),
+        (Permissions::USE_EXTERNAL_STICKERS, "USE_EXTERNAL_STICKERS"),
+        (
+            Permissions::SEND_MESSAGES_IN_THREADS,
+            "SEND_MESSAGES_IN_THREADS",
+        ),
+        (Permissions::MODERATE_MEMBERS, "MODERATE_MEMBERS"),
+    ];
+    NAMED
+        .iter()
+        .filter(|(permission, _)| held.contains(*permission))
+        .map(|(_, name)| (*name).to_string())
+        .collect()
 }
 
 /// Reject a zero page size and clamp anything above Discord's maximum.

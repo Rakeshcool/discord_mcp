@@ -259,3 +259,135 @@ fn unreadable_configuration_file_is_reported_with_its_path() {
         }
     }
 }
+
+#[test]
+fn control_tools_require_a_channel_allowlist() {
+    let message = rejection(
+        "[policy]
+control_enabled = true
+",
+    );
+    assert!(
+        message.contains("policy.channel_allowlist"),
+        "unexpected message: {message}"
+    );
+}
+
+#[test]
+fn moderation_and_administration_require_a_guild_allowlist() {
+    for field in ["moderation_enabled", "administrative_enabled"] {
+        let message = rejection(&format!(
+            "[policy]
+{field} = true
+"
+        ));
+        assert!(
+            message.contains("policy.guild_allowlist"),
+            "`{field}` should require a guild allowlist: {message}"
+        );
+    }
+
+    accepted(
+        "[policy]
+administrative_enabled = true
+guild_allowlist = [\"123456789012345678\"]
+",
+    );
+}
+
+#[test]
+fn autonomy_limits_are_bounded() {
+    for value in ["0", "601"] {
+        let message = rejection(&format!(
+            "[policy]
+[policy.autonomy]
+max_actions_per_minute = {value}
+"
+        ));
+        assert!(
+            message.contains("policy.autonomy.max_actions_per_minute"),
+            "unexpected message: {message}"
+        );
+    }
+
+    for value in ["1", "101"] {
+        let message = rejection(&format!(
+            "[policy]
+[policy.autonomy]
+max_bulk_delete = {value}
+"
+        ));
+        assert!(
+            message.contains("policy.autonomy.max_bulk_delete"),
+            "unexpected message: {message}"
+        );
+    }
+}
+
+#[test]
+fn dry_run_entries_must_name_tools_and_be_unique() {
+    let malformed = rejection(
+        "[policy]
+[policy.autonomy]
+require_dry_run = [\"delete things\"]
+",
+    );
+    assert!(
+        malformed.contains("policy.autonomy.require_dry_run"),
+        "unexpected message: {malformed}"
+    );
+
+    let duplicated = rejection(
+        "[policy]
+[policy.autonomy]
+require_dry_run = [\"discord_delete_message\", \"discord_delete_message\"]
+",
+    );
+    assert!(
+        duplicated.contains("more than once"),
+        "unexpected message: {duplicated}"
+    );
+
+    accepted(
+        "[policy]
+[policy.autonomy]
+require_dry_run = [\"discord_delete_message\"]
+",
+    );
+}
+
+#[test]
+fn protected_ids_are_validated_as_snowflakes() {
+    for table in ["role_ids", "user_ids"] {
+        let message = rejection(&format!(
+            "[policy]
+[policy.protected]
+{table} = [\"moderator\"]
+"
+        ));
+        assert!(message.contains(table), "unexpected message: {message}");
+    }
+
+    accepted(
+        "[policy]
+[policy.protected]
+role_ids = [\"123456789012345678\"]
+user_ids = [\"123456789012345679\"]
+",
+    );
+}
+
+#[test]
+fn mutation_classes_are_off_by_default() {
+    let config = load(None).expect("the built-in defaults must load");
+
+    assert!(!config.policy.control_enabled);
+    assert!(!config.policy.moderation_enabled);
+    assert!(!config.policy.administrative_enabled);
+    assert_eq!(config.policy.autonomy.max_actions_per_minute, 30);
+    assert_eq!(config.policy.autonomy.max_bulk_delete, 50);
+    assert!(config.policy.autonomy.protect_bot_role);
+    assert!(config.policy.autonomy.require_dry_run.is_empty());
+    assert!(config.policy.protected.role_ids.is_empty());
+    assert!(config.policy.protected.user_ids.is_empty());
+}

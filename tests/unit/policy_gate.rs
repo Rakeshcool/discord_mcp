@@ -10,17 +10,18 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::sync::Semaphore;
 
-use discord_mcp::config::schema::PolicyConfig;
+use discord_mcp::config::schema::{AutonomyConfig, PolicyConfig};
 use discord_mcp::discord::DiscordApi;
+use discord_mcp::discord::client::MutationOutcome;
 use discord_mcp::discord::ids::{ChannelId, GuildId, MessageId, UserId};
 use discord_mcp::discord::models::{
-    ChannelKind, ChannelSummary, GuildDetail, GuildSummary, MemberSummary, MessageAuthor,
-    MessageQuery, MessageSummary, Page,
+    BotIdentity, ChannelKind, ChannelSummary, GuildDetail, GuildPermissions, GuildSummary,
+    MemberSummary, MessageAuthor, MessageQuery, MessageSummary, Page,
 };
 use discord_mcp::error::{AppError, ErrorCategory};
 use discord_mcp::policy::audit::{AuditEvent, AuditOutcome, AuditSink, AuditTarget};
 use discord_mcp::policy::gate::PolicyGate;
-use discord_mcp::policy::rules::Policy;
+use discord_mcp::policy::rules::{Policy, ToolRisk};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Call {
@@ -33,6 +34,16 @@ enum Call {
     ListMembers(u64),
     GetMember(u64, u64),
     SendMessage(u64, String),
+    EditMessage(u64, u64, String),
+    DeleteMessage(u64, u64),
+    BulkDelete(u64, usize),
+    AddReaction(u64, u64, String),
+    RemoveReaction(u64, u64, String),
+    ClearReactions(u64, u64),
+    Pin(u64, u64),
+    Unpin(u64, u64),
+    BotIdentity,
+    GuildPermissions(u64),
 }
 
 #[derive(Debug)]
@@ -240,6 +251,126 @@ impl DiscordApi for FakeDiscord {
         self.record(Call::SendMessage(channel_id.get(), content.to_string()))
             .await?;
         Ok(message_summary(100))
+    }
+
+    async fn bot_identity(&self) -> Result<BotIdentity, AppError> {
+        self.record(Call::BotIdentity).await?;
+        Ok(BotIdentity {
+            id: UserId::from_u64(99),
+            username: "test-bot".to_string(),
+        })
+    }
+
+    async fn guild_permissions(&self, guild_id: &GuildId) -> Result<GuildPermissions, AppError> {
+        self.record(Call::GuildPermissions(guild_id.get())).await?;
+        Ok(GuildPermissions {
+            guild_id: *guild_id,
+            permissions: vec!["SEND_MESSAGES".to_string()],
+            administrator: false,
+        })
+    }
+
+    async fn edit_message(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        content: &str,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<MessageSummary>, AppError> {
+        self.record(Call::EditMessage(
+            channel_id.get(),
+            message_id.get(),
+            content.to_string(),
+        ))
+        .await?;
+        Ok(MutationOutcome::Applied(message_summary(message_id.get())))
+    }
+
+    async fn delete_message(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.record(Call::DeleteMessage(channel_id.get(), message_id.get()))
+            .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn bulk_delete_messages(
+        &self,
+        channel_id: &ChannelId,
+        message_ids: &[MessageId],
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<u64>, AppError> {
+        self.record(Call::BulkDelete(channel_id.get(), message_ids.len()))
+            .await?;
+        Ok(MutationOutcome::Applied(message_ids.len() as u64))
+    }
+
+    async fn add_reaction(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        emoji: &str,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.record(Call::AddReaction(
+            channel_id.get(),
+            message_id.get(),
+            emoji.to_string(),
+        ))
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn remove_reaction(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        emoji: &str,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.record(Call::RemoveReaction(
+            channel_id.get(),
+            message_id.get(),
+            emoji.to_string(),
+        ))
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn clear_reactions(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.record(Call::ClearReactions(channel_id.get(), message_id.get()))
+            .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn pin_message(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.record(Call::Pin(channel_id.get(), message_id.get()))
+            .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn unpin_message(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.record(Call::Unpin(channel_id.get(), message_id.get()))
+            .await?;
+        Ok(MutationOutcome::Applied(()))
     }
 }
 
@@ -870,4 +1001,194 @@ async fn the_gate_dispatches_through_a_dyn_discord_api() {
     let detail = api.get_guild(&guild(1)).await.expect("allowed");
 
     assert_eq!(detail.id, guild(1));
+}
+
+fn mutation_config() -> PolicyConfig {
+    PolicyConfig {
+        write_enabled: true,
+        control_enabled: true,
+        channel_allowlist: vec!["4".to_string()],
+        ..PolicyConfig::default()
+    }
+}
+
+#[test]
+fn every_risk_class_is_refused_when_its_flag_is_off() {
+    let policy = policy(PolicyConfig::default());
+
+    for tool in [
+        "discord_send_message",
+        "discord_edit_message",
+        "discord_delete_message",
+        "discord_bulk_delete_messages",
+    ] {
+        let error = policy
+            .check_tool(tool)
+            .expect_err("a disabled class must refuse its tools");
+        assert_eq!(error.category(), ErrorCategory::PolicyBlocked, "{tool}");
+    }
+
+    assert_eq!(
+        policy
+            .check_tool("discord_get_capabilities")
+            .expect("reads are enabled by default"),
+        ToolRisk::Read
+    );
+}
+
+#[tokio::test]
+async fn the_shared_budget_refuses_a_burst() {
+    let fake = Arc::new(FakeDiscord::new());
+    let config = PolicyConfig {
+        autonomy: AutonomyConfig {
+            max_actions_per_minute: 2,
+            ..AutonomyConfig::default()
+        },
+        ..mutation_config()
+    };
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(config),
+        Arc::new(RecordingAudit::default()),
+    );
+    let message = MessageId::from_u64(9);
+
+    for _ in 0..2 {
+        gated
+            .add_reaction(&channel(4), &message, ":wave:", false)
+            .await
+            .expect("the first two actions are within budget");
+    }
+    let error = gated
+        .add_reaction(&channel(4), &message, ":wave:", false)
+        .await
+        .expect_err("the third action must be refused");
+    assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+    assert!(
+        error.message().contains("max_actions_per_minute"),
+        "got {error}"
+    );
+    assert_eq!(
+        fake.calls().len(),
+        2,
+        "only the allowed attempts may reach Discord"
+    );
+}
+
+#[tokio::test]
+async fn a_dry_run_reaches_no_discord_request() {
+    let fake = Arc::new(FakeDiscord::new());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(mutation_config()),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    let outcome = gated
+        .delete_message(&channel(4), &MessageId::from_u64(9), true)
+        .await
+        .expect("a dry run is a policy decision, not an error");
+
+    assert_eq!(outcome, MutationOutcome::Planned);
+    assert!(
+        fake.calls().is_empty(),
+        "a dry run must not send anything: {:?}",
+        fake.calls()
+    );
+}
+
+#[tokio::test]
+async fn a_bulk_delete_of_old_messages_is_refused() {
+    let fake = Arc::new(FakeDiscord::new());
+    let config = PolicyConfig {
+        administrative_enabled: true,
+        guild_allowlist: vec!["1".to_string()],
+        ..mutation_config()
+    };
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(config),
+        Arc::new(RecordingAudit::default()),
+    );
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock must be after 1970")
+        .as_millis() as u64;
+    let old = snowflake_at(now_ms - 15 * 24 * 60 * 60 * 1_000);
+    let recent = snowflake_at(now_ms - 1_000);
+
+    let error = gated
+        .bulk_delete_messages(&channel(4), &[old, recent], false)
+        .await
+        .expect_err("a 15-day-old message cannot be bulk deleted");
+    assert_eq!(error.category(), ErrorCategory::InvalidArgument);
+    assert!(
+        error.message().contains("older than 14 days"),
+        "got {error}"
+    );
+    assert!(fake.calls().is_empty());
+}
+
+#[tokio::test]
+async fn a_bulk_delete_above_the_policy_cap_is_refused() {
+    let fake = Arc::new(FakeDiscord::new());
+    let config = PolicyConfig {
+        administrative_enabled: true,
+        guild_allowlist: vec!["1".to_string()],
+        autonomy: AutonomyConfig {
+            max_bulk_delete: 2,
+            ..AutonomyConfig::default()
+        },
+        ..mutation_config()
+    };
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(config),
+        Arc::new(RecordingAudit::default()),
+    );
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock must be after 1970")
+        .as_millis() as u64;
+    let ids: Vec<MessageId> = (1..=3)
+        .map(|offset| snowflake_at(now_ms - offset * 1_000))
+        .collect();
+
+    let error = gated
+        .bulk_delete_messages(&channel(4), &ids, false)
+        .await
+        .expect_err("three ids exceed a cap of two");
+    assert_eq!(error.category(), ErrorCategory::InvalidArgument);
+    assert!(error.message().contains("max_bulk_delete"), "got {error}");
+    assert!(fake.calls().is_empty());
+}
+
+#[tokio::test]
+async fn a_tool_that_requires_dry_run_refuses_a_real_call() {
+    let fake = Arc::new(FakeDiscord::new());
+    let config = PolicyConfig {
+        autonomy: AutonomyConfig {
+            require_dry_run: vec!["discord_delete_message".to_string()],
+            ..AutonomyConfig::default()
+        },
+        ..mutation_config()
+    };
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(config),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    let error = gated
+        .delete_message(&channel(4), &MessageId::from_u64(9), false)
+        .await
+        .expect_err("the policy demands a dry run first");
+    assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+    assert!(error.message().contains("dry_run"), "got {error}");
+    assert!(fake.calls().is_empty());
+}
+
+fn snowflake_at(millis: u64) -> MessageId {
+    const DISCORD_EPOCH_MS: u64 = 1_420_070_400_000;
+    MessageId::from_u64((millis - DISCORD_EPOCH_MS) << 22)
 }
