@@ -1,109 +1,44 @@
 # discord-mcp
 
-A secure Model Context Protocol (MCP) server for Discord, using an **official
-Discord bot identity**. Windows 11 x64, Rust, MCP STDIO and Streamable HTTP
-transports.
+A Model Context Protocol (MCP) server for Discord, using an **official bot
+identity**. Windows 11 x64 (Rust), over STDIO or Streamable HTTP.
 
-It is not a self-bot, not a user-account automation tool, and not a Discord
-client reimplementation. **Start with [`docs/SETUP.md`](docs/SETUP.md)** for the
-full install-to-first-call guide (Discord app, intents, permissions, both
-transports, client configuration, verification, troubleshooting). See `SPEC.md`
-for the full specification, `TASKS.md` for the phased plan,
-[`docs/TOOLS.md`](docs/TOOLS.md) for the per-tool reference, and
-`docs/SECURITY.md` for the threat model.
+It is not a self-bot, not user-account automation, and not a Discord client. It
+reads through the bot API and can post one message to allowlisted channels when
+you enable writes.
 
-## Status
+## Install
 
-Through Phase 9 — read access over STDIO and Streamable HTTP, one audited write
-tool that is disabled by default, and a tagged `v0.1.0` release with a committed
-checksum. The remaining write operations (edit, delete, reactions) are not
-started. The Phase 10 release gate is signed off against the published artifact.
-
-Prebuilt binary: <https://github.com/Rakeshcool/discord_mcp/releases/tag/v0.1.0>
-— `discord-mcp.exe` for `x86_64-pc-windows-msvc` plus its SHA-256, built from the
-tagged commit.
-
-Implemented: typed configuration with fail-closed validation, stable error
-categories, secret wrapper, structural secret redaction, stderr-only logging,
-per-call correlation ids and spans, stdio MCP handshake, CLI (`serve`,
-`--validate-config`), CI; a twilight-backed
-read adapter with timeouts, bounded retries and error mapping; a policy engine
-(flags, guild/channel allowlists, page limits, concurrency cap, mention
-neutralisation, fail-closed approval, content-free audit records) enforced in
-front of the client; eight read tools, one audited write tool and the
-`discord://guilds` resource; and a
-Streamable HTTP transport with loopback defaults, a bearer-token gate, `Host` and
-`Origin` validation, request-body caps, a request deadline that also covers the
-response body, idle-session expiry and per-session isolation.
-
-Not implemented yet:
-
-- **More writes (Phase 7).** `discord_send_message` exists, but nothing can
-  edit, delete, react or bulk-delete, and the write tool refuses until
-  `policy.write_enabled = true` with a non-empty `policy.channel_allowlist`.
-- **HTTP.** Session resumption (event replay after a reconnect) is unverified;
-  session creation, acknowledgement, termination and disconnect recovery are
-  covered by process tests.
-- **Deployment.** TLS termination is not implemented; a reverse proxy has to
-  terminate it, and `docs/SETUP.md` §7 documents the settings it must use.
-- **Packaging.** `v0.1.0` is a tag plus a GitHub release; the executable is
-  attached to the release rather than committed, so there is no installer, MSI or
-  auto-update.
-- **Credential store.** The bot token comes from the environment; Windows
-  Credential Manager is documented as a launcher pattern, not read natively.
-
-## Build and test
+Download `discord-mcp.exe` from the
+[latest release](https://github.com/Rakeshcool/discord_mcp/releases/tag/v0.1.0)
+and verify it against the attached checksum:
 
 ```powershell
-cargo build
-cargo fmt --all --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
+(Get-FileHash .\discord-mcp.exe -Algorithm SHA256).Hash.ToLower()
 ```
 
-Windows MSVC is the only supported target (`x86_64-pc-windows-msvc`). No WSL or
-Docker is needed. For a release build whose hash is comparable with
-`dist/*.sha256`, run `scripts\build-release.ps1`: it makes the build
-byte-reproducible and prints the artifact's SHA-256.
+The result must be `7d542065e3b178f30279dc79635694e731346c7cf848cc537cd0779cef57add4`.
 
-## Configuration
+## Quick start
 
-Built-in defaults live in `config/default.toml` and are compiled into the
-binary. Point the server at your own copy with `--config <PATH>` or the
-`DISCORD_MCP_CONFIG` environment variable; a file that fails to parse or validate
-is a startup failure, never a silent fallback.
-
-Validate without starting anything:
+You need a Discord application with a bot token, and the bot invited to your
+server. [`docs/SETUP.md`](docs/SETUP.md) walks through the portal, intents,
+permissions and verification.
 
 ```powershell
-$env:DISCORD_BOT_TOKEN = "..."   # optional for --validate-config
-cargo run -- --validate-config
+$env:DISCORD_BOT_TOKEN = "<bot token>"
+.\discord-mcp.exe --validate-config    # checks config, prints nothing secret
+.\discord-mcp.exe serve                # STDIO, the default transport
 ```
 
-## Environment
+stdout carries MCP frames only; all logs go to stderr. Exit codes: `0` success,
+`1` internal error, `2` usage/configuration, `3` authentication, `4` policy
+refusal.
 
-| Variable | Purpose |
-|---|---|
-| `DISCORD_BOT_TOKEN` | Bot token, required by `serve` |
-| `DISCORD_MCP_CONFIG` | Path to a TOML configuration file |
-| `DISCORD_MCP_HTTP_TOKEN` | Bearer token for the HTTP transport, when `http.require_auth` is set (variable name comes from `http.auth_token_env`) |
-| `RUST_LOG` | Log filter override, e.g. `info` or `discord_mcp=debug` |
+## Connect an MCP client
 
-Secrets are never written to configuration files. `.env.example` lists variable
-names only; the server does not read `.env` files by itself.
-
-## Running
-
-```powershell
-$env:DISCORD_BOT_TOKEN = "..."
-cargo run -- serve
-```
-
-stdout carries MCP protocol frames only; every diagnostic goes to stderr. Exit
-codes: `0` success, `1` internal failure, `2` usage/configuration error, `3`
-authentication failure, `4` policy refusal.
-
-MCP client configuration over stdio:
+For a client that launches stdio servers (Claude Desktop uses
+`%APPDATA%\Claude\claude_desktop_config.json`):
 
 ```json
 {
@@ -117,14 +52,44 @@ MCP client configuration over stdio:
 }
 ```
 
-Reading message **text** needs the **Message Content** privileged intent on the
-bot (Developer Portal → Bot → Privileged Gateway Intents). Without it Discord
-returns empty `content`, `embeds` and `attachments` in REST responses as well as
-gateway events, so `discord_get_messages` reports `content: null` for every
-message the bot did not send itself — the tool is working, the data is withheld.
-`GUILD_MEMBERS` is the equivalent toggle for the member tools.
+**Message text needs the Message Content intent.** Without it Discord returns
+empty `content` in REST responses too, so `discord_get_messages` reports
+`content: null` for every message the bot did not send itself — the tool is
+working, the data is withheld. The **Server Members** intent is the same story
+for the member tools.
 
-### Streamable HTTP
+## Configuration
+
+Defaults are compiled in from `config/default.toml`. Point the server at your own
+copy with `--config <PATH>` or `DISCORD_MCP_CONFIG`; a file that fails to parse
+or validate stops startup rather than falling back silently.
+
+| Variable | Purpose |
+|---|---|
+| `DISCORD_BOT_TOKEN` | Bot token, required by `serve`; the variable name comes from `discord.token_env` |
+| `DISCORD_MCP_CONFIG` | Path to a TOML configuration file |
+| `DISCORD_MCP_HTTP_TOKEN` | Bearer token for the HTTP transport; name comes from `http.auth_token_env` |
+| `RUST_LOG` | Log filter, e.g. `info` or `discord_mcp=debug` |
+
+The server reads the environment and never reads `.env` itself; `.env.example`
+lists the variable names.
+
+## Writes
+
+`discord_send_message` is **off by default**. Turning it on needs both settings,
+and validation refuses the first without the second:
+
+```toml
+[policy]
+write_enabled = true
+channel_allowlist = ["1572365820133118035"]
+```
+
+The tool posts plain text to those channels only. Mentions are neutralised, the
+length limit applies, and each attempt writes one audit record to stderr.
+Nothing can edit, delete, react or bulk-delete.
+
+## Streamable HTTP
 
 ```toml
 # config/http.toml
@@ -140,36 +105,35 @@ require_auth = true
 ```powershell
 $env:DISCORD_BOT_TOKEN = "..."
 $env:DISCORD_MCP_HTTP_TOKEN = "<at least 16 random characters>"
-cargo run -- serve --config config/http.toml
+.\discord-mcp.exe serve --config config\http.toml
 ```
 
-The endpoint is `POST http://127.0.0.1:8787/mcp`, called with
-`Authorization: Bearer $env:DISCORD_MCP_HTTP_TOKEN`. Responses are `200` with an
-SSE or JSON body; a missing or wrong token is `401` with `WWW-Authenticate:
-Bearer`, a refused `Host` or `Origin` is `403`.
+`POST http://127.0.0.1:8787/mcp` with `Authorization: Bearer <token>`. A missing
+or wrong token is `401`; a refused `Host` or `Origin` is `403`. `GET /health`
+reports status behind the same token. The listener is loopback-only unless
+`http.allow_non_loopback = true`, which validation allows only with
+`require_auth = true` and an explicit `allowed_origins` list.
 
-The listener is loopback unless `http.allow_non_loopback = true`, and
-configuration validation refuses a non-loopback bind unless `require_auth = true`
-and `allowed_origins` is non-empty. `Host` must be the bind address (or
-`localhost` when bound to loopback), so a DNS name that resolves to `127.0.0.1`
-cannot reach the endpoint. A request carrying `Origin` must match
-`allowed_origins`; with the default empty list every `Origin`-bearing request is
-refused, which is what stops a browser page from driving the server. `both` runs
-STDIO and HTTP from the same process over the same `AppState`.
+**This server does not terminate TLS.** For anything beyond loopback, run it
+behind a proxy that does, with the settings in
+[`docs/SETUP.md`](docs/SETUP.md) §7.
 
-`http.request_timeout_seconds` bounds how long one request may take, headers and
-response body together; a request that outlives it is answered `504` or has its
-response body cut off, and the long-lived `GET` event stream is exempt because
-that is a session stream rather than a request. `http.session_expiry_seconds` is
-the idle timeout after which a session is closed and its resources released.
-`http.max_in_flight_requests` bounds how many non-`GET` requests are handled at
-once; one beyond the cap is refused with `503` and `Retry-After` rather than
-queued. `GET /health` answers a small JSON status behind the same bearer token,
-contacts nothing, and stays available while the cap is saturated. Ctrl+C drains:
-the listener stops accepting and finishes the requests already in flight, each
-bounded by the request deadline.
+## Build from source
 
-Bot creation, intents, permissions, client configuration, verification steps and
-troubleshooting are in [`docs/SETUP.md`](docs/SETUP.md);
-[`docs/TOOLS.md`](docs/TOOLS.md) documents every tool, argument and result shape,
-and `docs/DEPENDENCIES.md` records the verified dependency and API decisions.
+```powershell
+cargo build --release
+```
+
+Windows MSVC only (`x86_64-pc-windows-msvc`); no WSL or Docker. For a build whose
+hash matches `dist/*.sha256`, use `scripts\build-release.ps1`, which makes the
+build byte-reproducible and prints the artifact's SHA-256.
+
+## Documentation
+
+- [`docs/SETUP.md`](docs/SETUP.md) — Discord application, token, intents,
+  permissions, both transports, verification, troubleshooting.
+- [`docs/TOOLS.md`](docs/TOOLS.md) — every tool: arguments, result JSON, error
+  codes, retry behaviour.
+- [`docs/SECURITY.md`](docs/SECURITY.md) — threat model and implemented controls.
+- [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md) — dependency choices and the
+  advisory scan.
