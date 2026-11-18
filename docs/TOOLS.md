@@ -60,6 +60,10 @@ covers the threat model.
 | `policy.max_message_characters` | Ceiling for `discord_send_message.content`, counted in characters |
 | `policy.max_concurrent_requests` | Caps in-flight Discord requests; calls queue rather than fail |
 
+There is no approval prompt. The gate is the class flag, the allowlist, the
+rolling budget and `dry_run`; every real attempt is audited, and
+`policy.autonomy.require_dry_run` makes the plan step mandatory for named tools.
+
 `discord_list_guilds` filters its results to allowlisted guilds instead of
 refusing, so a guild allowlist cannot be inferred from the listing.
 

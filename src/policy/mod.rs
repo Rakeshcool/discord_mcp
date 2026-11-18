@@ -8,21 +8,18 @@
 //!   mention neutralisation, as pure functions of configuration and the request.
 //! - [`gate`] — the enforcing decorator that wraps the Discord client, so a tool
 //!   cannot reach Discord without passing the rules.
-//! - [`approval`] — the fail-closed approval abstraction for destructive actions.
 //! - [`audit`] — content-free records of what policy decided.
 //!
 //! Every mutation class is disabled by default. When an operator enables one,
 //! the gate applies its flag, allowlist, budget and audit path before a request
-//! is built, and a dry run stops before all of them.
+//! is built, and a dry run stops before all of them. There is no confirmation
+//! prompt: `dry_run` is the plan step and the class flag plus allowlist is the
+//! authority boundary.
 
-pub mod approval;
 pub mod audit;
 pub mod gate;
 pub mod rules;
 
-pub use approval::{
-    Approval, ApprovalRequest, ApprovalSource, UnavailableApproval, authorize_destructive,
-};
 pub use audit::{AuditEvent, AuditOutcome, AuditSink, AuditTarget, LoggingAudit};
 pub use gate::PolicyGate;
 pub use rules::{Policy, SanitizedMessage, ToolRisk, classify_tool, sanitize_mentions};

@@ -2,7 +2,6 @@
 
 mod config_validation;
 mod error_model;
-mod policy_approval;
 mod policy_gate;
 mod policy_rules;
 mod redaction;

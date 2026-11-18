@@ -33,7 +33,9 @@ allow_insecure_transport = false          # only for a loopback mock server
 [policy]
 read_enabled = true
 write_enabled = false                     # writes are opt-in
-require_confirmation_for_destructive = true
+# Destructive actions have no confirmation prompt. Their bounds are the class
+# flag, the allowlist, the rolling budget and dry_run: plan with dry_run, then
+# apply the same call.
 guild_allowlist = []                      # empty = every guild the bot can see
 channel_allowlist = []                    # required non-empty when write_enabled
 max_messages_per_read = 100
