@@ -1362,7 +1362,6 @@ fn new_channel_spec() -> NewChannel {
         parent_id: None,
         topic: None,
         nsfw: false,
-        position: None,
     }
 }
 
@@ -1542,6 +1541,51 @@ async fn thread_edits_authorize_through_the_parent_channel() {
 }
 
 #[tokio::test]
+async fn a_thread_dry_run_does_not_look_the_thread_up() {
+    let fake = Arc::new(FakeDiscord::new().with_parent(9, 4));
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(mutation_config()),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    let outcome = gated
+        .edit_thread(&channel(9), Some(true), None, true)
+        .await
+        .expect("a dry run reports the local policy decision");
+
+    assert_eq!(outcome, MutationOutcome::Planned);
+    assert!(
+        fake.calls().is_empty(),
+        "a dry run must not resolve remote scope: {:?}",
+        fake.calls()
+    );
+}
+
+#[tokio::test]
+async fn a_thread_without_a_guild_is_refused_under_a_guild_allowlist() {
+    let fake = Arc::new(FakeDiscord::new().with_parent(9, 4));
+    let config = PolicyConfig {
+        guild_allowlist: vec!["1".to_string()],
+        ..mutation_config()
+    };
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(config),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    let error = gated
+        .edit_thread(&channel(9), Some(true), None, false)
+        .await
+        .expect_err("a guild allowlist cannot verify a guild-less thread");
+
+    assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+    assert!(error.message().contains("no guild"), "got {error}");
+    assert_eq!(fake.calls(), vec![Call::GetChannel(9)]);
+}
+
+#[tokio::test]
 async fn deleting_an_invite_resolves_its_channel_first() {
     let denied_fake = Arc::new(FakeDiscord::new().with_invite("abc", 5));
     let denied = gate(
@@ -1577,6 +1621,93 @@ async fn deleting_an_invite_resolves_its_channel_first() {
             Call::DeleteInvite("abc".to_string())
         ]
     );
+}
+
+#[tokio::test]
+async fn revoking_an_invite_audits_the_resolved_channel() {
+    let fake = Arc::new(FakeDiscord::new().with_invite("abc", 4));
+    let audit = Arc::new(RecordingAudit::default());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(mutation_config()),
+        Arc::clone(&audit),
+    );
+
+    gated
+        .delete_invite("abc", false)
+        .await
+        .expect("the invite's channel is allowed");
+
+    let events = audit.events();
+    assert_eq!(
+        events.len(),
+        1,
+        "resolution must not add a record of its own: {events:?}"
+    );
+    assert_eq!(events[0].action, "discord_delete_invite");
+    assert_eq!(events[0].target, AuditTarget::for_channel(channel(4)));
+    assert_eq!(events[0].outcome, AuditOutcome::Allowed);
+}
+
+#[tokio::test]
+async fn the_invite_lookup_is_a_policy_checked_audited_read() {
+    let fake = Arc::new(FakeDiscord::new().with_invite("abc", 4));
+    let audit = Arc::new(RecordingAudit::default());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(mutation_config()),
+        Arc::clone(&audit),
+    );
+
+    let invite = gated.get_invite("abc").await.expect("reads are enabled");
+
+    assert_eq!(invite.channel_id, Some(channel(4)));
+    let events = audit.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].action, "discord_resolve_invite");
+    assert_eq!(events[0].outcome, AuditOutcome::Allowed);
+}
+
+#[tokio::test]
+async fn the_invite_lookup_refuses_when_reads_are_off() {
+    let fake = Arc::new(FakeDiscord::new().with_invite("abc", 4));
+    let audit = Arc::new(RecordingAudit::default());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(PolicyConfig {
+            read_enabled: false,
+            ..mutation_config()
+        }),
+        Arc::clone(&audit),
+    );
+
+    let error = gated
+        .get_invite("abc")
+        .await
+        .expect_err("the read flag must apply to this lookup too");
+
+    assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+    assert!(fake.calls().is_empty(), "the refusal precedes the request");
+    assert_eq!(audit.events().len(), 1);
+    assert_eq!(audit.events()[0].outcome, AuditOutcome::Denied);
+}
+
+#[tokio::test]
+async fn an_invite_dry_run_sends_no_request() {
+    let fake = Arc::new(FakeDiscord::new().with_invite("abc", 4));
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(mutation_config()),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    let outcome = gated
+        .delete_invite("abc", true)
+        .await
+        .expect("a dry run reports the local policy decision");
+
+    assert_eq!(outcome, MutationOutcome::Planned);
+    assert!(fake.calls().is_empty(), "a dry run must send nothing");
 }
 
 #[tokio::test]

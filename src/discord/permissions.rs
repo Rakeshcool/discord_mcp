@@ -62,11 +62,6 @@ impl PermissionBits {
     pub const fn bits(self) -> u64 {
         self.0
     }
-
-    /// Whether nothing is set.
-    pub const fn is_empty(self) -> bool {
-        self.0 == 0
-    }
 }
 
 /// Resolve names into bits.
@@ -109,7 +104,6 @@ mod tests {
         )
         .expect("both names are known");
         assert_eq!(bits.bits(), (1 << 10) | (1 << 11));
-        assert!(!bits.is_empty());
     }
 
     #[test]
@@ -132,9 +126,8 @@ mod tests {
 
     #[test]
     fn an_empty_list_is_empty() {
-        assert_eq!(
-            resolve(&[], "allow", false).expect("nothing to resolve"),
-            PermissionBits::default()
-        );
+        let bits = resolve(&[], "allow", false).expect("nothing to resolve");
+        assert_eq!(bits, PermissionBits::default());
+        assert_eq!(bits.bits(), 0);
     }
 }

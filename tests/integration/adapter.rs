@@ -797,7 +797,6 @@ async fn create_channel_posts_name_type_parent_and_nsfw() {
         parent_id: Some(channel_id("5005")),
         topic: None,
         nsfw: true,
-        position: None,
     };
 
     let outcome = api

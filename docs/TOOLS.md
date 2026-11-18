@@ -270,9 +270,10 @@ What applies to every attempt:
 
 These tools change server structure. Every one of them needs
 `policy.control_enabled = true`, its channel on `policy.channel_allowlist`, and an
-action from the shared per-minute budget; each accepts `dry_run`. Deleting a
-channel takes its messages with it, so `discord_delete_channel` is the one
-operation here that cannot be undone from Discord's UI.
+action from the shared per-minute budget; each accepts `dry_run`. A dry run
+validates arguments and everything policy knows locally, sends nothing and spends
+no budget. Scope that needs a lookup — a guild ID, a thread's parent, an invite's
+channel — is checked on the real call, before the mutation is sent.
 
 A channel created by these tools is **not** added to the allowlist. Operating on
 it afterwards needs an operator to add its ID, which is deliberate: the allowlist
@@ -281,9 +282,10 @@ is the human boundary, and no tool may widen it.
 ### `discord_create_channel`
 
 `guild_id`, `name`, and optionally `kind` (`text`, `voice`, `category`,
-`announcement`, `forum`, `stage`; default `text`), `parent_id`, `topic`, `nsfw`,
-`position`. The guild must be allowlisted, and a `parent_id` must itself be an
-allowed channel, so a category outside scope is not a foothold.
+`announcement`, `forum`, `stage`; default `text`), `parent_id`, `topic`, `nsfw`.
+The guild must be allowlisted, and a `parent_id` must itself be an allowed
+channel, so a category outside scope is not a foothold. Channel ordering is not
+exposed: it reorders the whole sidebar, which is a different risk from a rename.
 
 ### `discord_edit_channel`
 
@@ -331,7 +333,8 @@ invite code is a credential for the guild: treat it as one.
 
 `code`. Policy resolves the invite's channel before spending an action, so a
 code that points outside the allowlist is refused without a Discord mutation and
-without consuming budget.
+without consuming budget. The audit record for a revocation names that resolved
+channel; only a refusal before resolution is recorded without a target.
 
 ## 5. Resource
 

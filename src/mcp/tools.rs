@@ -226,8 +226,6 @@ pub struct CreateChannelArgs {
     pub topic: Option<String>,
     /// Age-restrict the channel. Defaults to false.
     pub nsfw: Option<bool>,
-    /// Sort position within the guild.
-    pub position: Option<u16>,
     /// Validate and report without creating anything. Off by default.
     pub dry_run: Option<bool>,
 }
@@ -941,7 +939,6 @@ impl DiscordMcpServer {
                 parent_id,
                 topic: args.topic,
                 nsfw: args.nsfw.unwrap_or(false),
-                position: args.position,
             };
             let outcome = self
                 .state()
