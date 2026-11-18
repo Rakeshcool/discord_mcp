@@ -27,7 +27,9 @@ Notable changes to `discord-mcp`, grouped by capability rather than by commit â€
   Permission names resolve to Discord bits and `ADMINISTRATOR` cannot be granted
   through an overwrite. Threads are authorised through their parent channel and
   invites through their channel, resolved before an action is spent; a channel
-  created by a tool joins the allowlist only when an operator adds it.
+  created by a tool joins the allowlist only when an operator adds it. Invite
+  revocation's audit record names the resolved channel, and the invite lookup is
+  a policy-checked, audited read rather than an unchecked trait method.
 
 ## v0.1.0 â€” 2026-11-18
 

@@ -318,11 +318,6 @@ impl Policy {
         self.check_guild(guild_id).is_ok()
     }
 
-    /// Whether a channel allowlist narrows the scope at all.
-    pub fn channel_restricted(&self) -> bool {
-        !self.channels.is_empty()
-    }
-
     /// Whether a channel may be touched, without building an error.
     pub fn allows_channel(&self, channel_id: &ChannelId) -> bool {
         self.check_channel(channel_id).is_ok()

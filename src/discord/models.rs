@@ -235,8 +235,6 @@ pub struct NewChannel {
     pub topic: Option<String>,
     /// Whether the channel is age restricted.
     pub nsfw: bool,
-    /// Sort position within the guild.
-    pub position: Option<u16>,
 }
 
 /// Fields to change on an existing channel.

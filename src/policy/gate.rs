@@ -722,10 +722,15 @@ impl DiscordApi for PolicyGate {
             .check_tool(ACTION)
             .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
         // A thread is never on the allowlist when it was just created, so the
-        // parent channel's permission stands in for it.
-        self.authorize_thread(thread_id)
-            .await
-            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+        // parent channel's permission stands in for it. That lookup costs a read,
+        // so it waits for an attempt that policy would allow: a dry run reports
+        // the local decision only, exactly as a channel tool does when the guild
+        // allowlist needs the same lookup.
+        if !dry_run && !self.policy.requires_dry_run(ACTION) {
+            self.authorize_thread(thread_id)
+                .await
+                .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+        }
 
         self.run_mutation(ACTION, target, dry_run, async {
             let _permit = self.permit().await?;
@@ -757,15 +762,22 @@ impl DiscordApi for PolicyGate {
         dry_run: bool,
     ) -> Result<MutationOutcome<()>, AppError> {
         const ACTION: &str = "discord_delete_invite";
-        let target = AuditTarget::none();
+        // Until the code is resolved there is no channel to name, so a refusal
+        // before that point is recorded without a target.
+        let mut target = AuditTarget::none();
         self.policy
             .check_tool(ACTION)
             .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
         // The code does not name a channel, so policy resolves it before the
         // budget is spent: a code outside the allowlist never costs an action.
-        self.authorize_invite(code)
-            .await
-            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+        // That read waits for a real attempt so a dry run sends nothing.
+        if !dry_run && !self.policy.requires_dry_run(ACTION) {
+            let channel_id = self
+                .authorize_invite(code)
+                .await
+                .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+            target = AuditTarget::for_channel(channel_id);
+        }
 
         self.run_mutation(ACTION, target, dry_run, async {
             let _permit = self.permit().await?;
@@ -775,9 +787,17 @@ impl DiscordApi for PolicyGate {
         .await
     }
 
+    /// The gate's own invite read.
+    ///
+    /// No tool exposes it, but it is reachable through `DiscordApi`, so it
+    /// honours read policy and leaves one audited read rather than being a way
+    /// around both.
     async fn get_invite(&self, code: &str) -> Result<InviteSummary, AppError> {
-        let _permit = self.permit().await?;
-        self.inner.get_invite(code).await
+        self.run("discord_resolve_invite", AuditTarget::none(), async {
+            self.policy.check_read_enabled()?;
+            self.resolve_invite(code).await
+        })
+        .await
     }
 }
 
@@ -797,23 +817,43 @@ impl PolicyGate {
             )
         })?;
         self.policy.check_channel(&parent)?;
-        if let Some(guild_id) = channel.guild_id {
-            self.policy.check_guild(&guild_id)?;
+        match channel.guild_id {
+            Some(guild_id) => self.policy.check_guild(&guild_id)?,
+            None if self.policy.guild_restricted() => {
+                return Err(AppError::policy_blocked(format!(
+                    "thread {thread_id} belongs to no guild, and policy.guild_allowlist is not empty"
+                )));
+            }
+            None => {}
         }
         Ok(())
     }
 
+    /// The lookup a mutation uses: policy-only, so it neither requires the read
+    /// flag nor writes a record of its own. The mutation it scopes writes the one
+    /// record for the call.
+    async fn resolve_invite(&self, code: &str) -> Result<InviteSummary, AppError> {
+        let _permit = self.permit().await?;
+        self.inner.get_invite(code).await
+    }
+
     /// Resolve an invite's channel before spending an action on it.
-    async fn authorize_invite(&self, code: &str) -> Result<(), AppError> {
-        let invite = self.get_invite(code).await?;
+    async fn authorize_invite(&self, code: &str) -> Result<ChannelId, AppError> {
+        let invite = self.resolve_invite(code).await?;
         let channel_id = invite.channel_id.ok_or_else(|| {
             AppError::policy_blocked("the invite does not name a channel policy can check")
         })?;
         self.policy.check_channel(&channel_id)?;
-        if let Some(guild_id) = invite.guild_id {
-            self.policy.check_guild(&guild_id)?;
+        match invite.guild_id {
+            Some(guild_id) => self.policy.check_guild(&guild_id)?,
+            None if self.policy.guild_restricted() => {
+                return Err(AppError::policy_blocked(format!(
+                    "invite {code} belongs to no guild, and policy.guild_allowlist is not empty"
+                )));
+            }
+            None => {}
         }
-        Ok(())
+        Ok(channel_id)
     }
 
     /// Channel-scoped structural mutations share one preamble: the control

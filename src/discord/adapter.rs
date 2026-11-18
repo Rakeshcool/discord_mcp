@@ -630,9 +630,6 @@ impl DiscordApi for TwilightDiscord {
                 if let Some(topic) = &spec.topic {
                     request = request.topic(topic);
                 }
-                if let Some(position) = spec.position {
-                    request = request.position(u64::from(position));
-                }
                 read_one(IntoFuture::into_future(request))
             })
             .await?;
