@@ -176,6 +176,26 @@ by hand to emit decimal strings, because a 19-digit snowflake does not survive a
 `f64` round trip. Schema-level `pattern` refinement is not used: validation is
 performed by the ID parsers, which return `INVALID_ARGUMENT` before any request.
 
+## Vulnerability policy
+
+- Every dependency is pinned to an exact version and `Cargo.lock` is committed,
+  so a build is reproducible and an advisory can be matched to a specific
+  version range.
+- The check is `cargo audit` against that lock file. **It has not been run for
+  this tree**: `cargo audit` is not installed in the development environment, and
+  installing a scanner was not part of this phase. Running it is the first thing
+  a release does.
+- Cadence: before every release tag, and monthly while the project is maintained.
+- An advisory that affects a reachable code path (an HTTP client, TLS, the MCP
+  protocol layer) is a release blocker. One that does not is recorded in the
+  commit that defers it, with the reason and the next review date.
+- Updating: bump one crate at a time, keep the exact pin, rerun
+  `cargo test --all-features --locked` and
+  `cargo clippy --all-targets --all-features -- -D warnings`, and say why in the
+  commit. `rmcp`, `twilight-http` and `rustls` can change behaviour rather than
+  just fix a bug, so each upgrade gets a changelog read plus the adapter and
+  protocol suites.
+
 ## v1 bot scopes and minimum permissions (Phase 0 decision)
 
 OAuth2 install URL scope: `bot` only. `applications.commands` is deliberately

@@ -311,6 +311,39 @@ fn an_unlisted_guild_is_refused_at_the_tool_boundary() {
 }
 
 #[test]
+fn a_write_is_refused_while_writes_are_disabled() {
+    let frames = session(&tool_call(
+        2,
+        "discord_send_message",
+        r#"{"channel_id":"4","content":"hello"}"#,
+    ));
+    let responses = run_session("write-disabled", "", &frames);
+
+    let text = tool_error_text(response_with_id(&responses, 2));
+    assert!(text.starts_with("POLICY_BLOCKED"), "got {text:?}");
+    assert!(text.contains("write_enabled"), "got {text:?}");
+}
+
+#[test]
+fn a_write_to_an_unlisted_channel_is_refused_at_the_tool_boundary() {
+    let frames = session(&tool_call(
+        2,
+        "discord_send_message",
+        r#"{"channel_id":"5","content":"hello"}"#,
+    ));
+    let responses = run_session(
+        "write-allowlist",
+        "[policy]\nwrite_enabled = true\nchannel_allowlist = [\"4\"]\n",
+        &frames,
+    );
+
+    let text = tool_error_text(response_with_id(&responses, 2));
+    assert!(text.starts_with("POLICY_BLOCKED"), "got {text:?}");
+    assert!(text.contains("channel 5"), "got {text:?}");
+    assert!(text.contains("channel_allowlist"), "got {text:?}");
+}
+
+#[test]
 fn an_oversized_message_page_is_an_invalid_argument_tool_error() {
     let frames = session(&tool_call(
         2,
@@ -336,7 +369,7 @@ fn an_unknown_argument_is_a_tool_error_from_the_strict_schema() {
 }
 
 #[test]
-fn tools_are_advertised_as_read_only_with_strict_schemas() {
+fn tools_are_advertised_with_strict_schemas_and_honest_annotations() {
     let frames =
         session("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}\n");
     let responses = run_session("tools-list", "", &frames);
@@ -360,6 +393,7 @@ fn tools_are_advertised_as_read_only_with_strict_schemas() {
             "discord_list_channels",
             "discord_list_guilds",
             "discord_list_members",
+            "discord_send_message",
         ]
     );
 
@@ -368,9 +402,11 @@ fn tools_are_advertised_as_read_only_with_strict_schemas() {
             tool["inputSchema"]["additionalProperties"], false,
             "schema must reject unknown arguments: {tool}"
         );
+        let name = tool["name"].as_str().expect("a tool name");
         assert_eq!(
-            tool["annotations"]["readOnlyHint"], true,
-            "every tool in this build is a read: {tool}"
+            tool["annotations"]["readOnlyHint"],
+            name != "discord_send_message",
+            "the read-only hint must match what the tool does: {tool}"
         );
     }
 }

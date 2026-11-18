@@ -22,6 +22,8 @@ pub(crate) struct RecordedRequest {
     pub(crate) method: String,
     /// Request path, including the query string.
     pub(crate) path: String,
+    /// Request body, as sent.
+    pub(crate) body: String,
     headers: HashMap<String, String>,
 }
 
@@ -46,6 +48,12 @@ impl RecordedRequest {
     pub(crate) fn route(&self) -> &str {
         self.path.split('?').next().unwrap_or(&self.path)
     }
+
+    /// The body parsed as JSON, which is what a `POST` sends.
+    pub(crate) fn json(&self) -> serde_json::Value {
+        serde_json::from_str(&self.body)
+            .unwrap_or_else(|error| panic!("body is not JSON ({error}): {:?}", self.body))
+    }
 }
 
 /// A canned response.
@@ -57,6 +65,8 @@ pub(crate) struct MockResponse {
     pub(crate) headers: Vec<(String, String)>,
     /// Body.
     pub(crate) body: String,
+    /// Declared `Content-Length`, when it should differ from the body sent.
+    pub(crate) content_length: Option<usize>,
     /// Delay before responding, for timeout tests.
     pub(crate) delay: Duration,
 }
@@ -68,6 +78,7 @@ impl MockResponse {
             status: 200,
             headers: Vec::new(),
             body: body.into(),
+            content_length: None,
             delay: Duration::ZERO,
         }
     }
@@ -92,6 +103,15 @@ impl MockResponse {
     /// Wait before responding.
     pub(crate) fn delay(mut self, delay: Duration) -> Self {
         self.delay = delay;
+        self
+    }
+
+    /// Promise more bytes than are sent, then close the connection.
+    ///
+    /// This is what a connection dropped mid-body looks like to a client: the
+    /// headers arrive, the body is short, and the socket ends.
+    pub(crate) fn declare_length(mut self, length: usize) -> Self {
+        self.content_length = Some(length);
         self
     }
 }
@@ -194,9 +214,26 @@ async fn read_request(stream: &mut TcpStream) -> Option<RecordedRequest> {
         }
     }
 
+    // A write carries a body, and the test asserts on it, so read exactly as many
+    // bytes as the request declared.
+    let length = headers
+        .get("content-length")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    while buffer.len() < headers_end + length {
+        let read = stream.read(&mut chunk).await.ok()?;
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+    }
+    let body_end = (headers_end + length).min(buffer.len());
+    let body = String::from_utf8_lossy(&buffer[headers_end..body_end]).into_owned();
+
     Some(RecordedRequest {
         method,
         path,
+        body,
         headers,
     })
 }
@@ -224,7 +261,7 @@ async fn write_response(stream: &mut TcpStream, response: MockResponse) -> std::
         "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
         response.status,
         reason,
-        response.body.len(),
+        response.content_length.unwrap_or(response.body.len()),
     );
     for (name, value) in &response.headers {
         head.push_str(name);

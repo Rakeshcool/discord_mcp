@@ -45,6 +45,7 @@ use rmcp::transport::streamable_http_server::session::local::LocalSessionManager
 use tokio::net::TcpListener;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_stream::{Stream, StreamExt as _};
+use tracing::Instrument;
 
 use crate::app::state::AppState;
 use crate::config::schema::{HttpConfig, is_loopback_host};
@@ -121,7 +122,9 @@ pub async fn serve(state: Arc<AppState>) -> Result<(), AppError> {
         .layer(middleware::from_fn_with_state(
             Duration::from_secs(config.request_timeout_seconds),
             limit_request_time,
-        ));
+        ))
+        // Outermost of all: every log record a request emits carries its id.
+        .layer(middleware::from_fn(trace_request));
 
     let listener = TcpListener::bind((config.host.as_str(), config.port))
         .await
@@ -147,10 +150,93 @@ pub async fn serve(state: Arc<AppState>) -> Result<(), AppError> {
         "MCP HTTP server listening"
     );
 
-    axum::serve(listener, router)
-        .await
-        .map_err(|error| AppError::internal(format!("the HTTP transport stopped: {error}")))?;
+    serve_bounded(
+        listener,
+        router,
+        Duration::from_secs(config.request_timeout_seconds),
+    )
+    .await?;
+    tracing::info!("MCP HTTP server stopped");
     Ok(())
+}
+
+/// Serve until Ctrl+C, then drain for at most `drain`.
+///
+/// A plain graceful shutdown waits for every connection to close, and the
+/// standalone `GET` event stream is held open until the client disconnects — its
+/// keep-alive resets the session idle timer, so it can outlive any sensible
+/// shutdown. Waiting for it would mean Ctrl+C never returning while a client is
+/// subscribed. The drain is therefore bounded: requests get `drain` (the same
+/// deadline that already bounds them) and anything still open after that is cut.
+async fn serve_bounded(
+    listener: TcpListener,
+    router: Router,
+    drain: Duration,
+) -> Result<(), AppError> {
+    let (drain_tx, drain_rx) = tokio::sync::oneshot::channel();
+    // axum 0.8 exposes the server as `IntoFuture`, not `Future`.
+    let server = std::future::IntoFuture::into_future(
+        axum::serve(listener, router).with_graceful_shutdown(async move {
+            let _ = drain_rx.await;
+        }),
+    );
+    tokio::pin!(server);
+
+    let stopped = |result: std::io::Result<()>| {
+        result.map_err(|error| AppError::internal(format!("the HTTP transport stopped: {error}")))
+    };
+
+    tokio::select! {
+        result = &mut server => stopped(result),
+        () = shutdown_signal() => {
+            tracing::info!(
+                drain_seconds = drain.as_secs(),
+                "shutdown signal received; draining in-flight requests"
+            );
+            let _ = drain_tx.send(());
+            match tokio::time::timeout(drain, &mut server).await {
+                Ok(result) => stopped(result),
+                Err(_) => {
+                    tracing::warn!(
+                        drain_seconds = drain.as_secs(),
+                        "in-flight requests did not finish within the drain window; stopping"
+                    );
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
+/// Resolve when the process is asked to stop.
+///
+/// STDIO has its own shutdown — the client closes stdin — which is why this is
+/// only wired into the HTTP transport.
+async fn shutdown_signal() {
+    match tokio::signal::ctrl_c().await {
+        Ok(()) => {}
+        // Without a signal handler there is nothing to wait for; keeping the
+        // listener up is better than exiting on a signal that never arrived.
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "cannot listen for Ctrl+C; the HTTP listener will not stop on a signal"
+            );
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+/// Give every HTTP request a correlation id and a span around its handling.
+async fn trace_request(request: Request, next: Next) -> Response {
+    let correlation = crate::observability::correlation::next_id();
+    let span = tracing::info_span!(
+        "http.request",
+        correlation,
+        method = %request.method(),
+        path = %request.uri().path()
+    );
+    next.run(request).instrument(span).await
 }
 
 /// The session manager, with the configured idle expiry.

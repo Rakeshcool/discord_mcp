@@ -159,26 +159,46 @@ and disconnect recovery; event replay after a reconnect (resumption) is not.
 
 ## Phase 7 — Controlled write operations
 
-- [ ] Implement `discord_send_message`.
-- [ ] Keep write operations disabled by default.
-- [ ] Enforce channel allowlist.
-- [ ] Enforce message length.
-- [ ] Default allowed mentions to none.
-- [ ] Verify bot permissions before sending where practical.
-- [ ] Add audit event for every attempted write.
-- [ ] Test policy-denied, permission-denied, rate-limited, and success cases.
+- [x] Implement `discord_send_message`. Registered unconditionally and refused
+      by the gate while writes are off, so a client can see the capability and
+      the reason it is unavailable. The adapter posts with
+      `allowed_mentions: {parse: []}` and no retries.
+- [x] Keep write operations disabled by default. `policy.write_enabled` is
+      `false` in the compiled defaults, and validation refuses enabling it with
+      an empty `policy.channel_allowlist`.
+- [x] Enforce channel allowlist. `Policy::check_channel` runs before a permit is
+      taken or any request is built.
+- [x] Enforce message length. `policy.max_message_characters`, measured in
+      characters, refused as `INVALID_ARGUMENT` rather than truncated.
+- [x] Default allowed mentions to none. The content is neutralised by policy and
+      the request itself sends an empty mention parse list.
+- [ ] Verify bot permissions before sending where practical. *(not implemented:
+      there is no pre-flight permission read. Discord's `403` becomes
+      `PERMISSION_DENIED`, is audited as `failed`, and nothing is retried — the
+      check happens at Discord, which is authoritative)*
+- [x] Add audit event for every attempted write. `run_write` records exactly one
+      event per attempt: `allowed`, `denied` for a policy refusal, or `failed`
+      with the category when Discord rejected an allowed attempt.
+- [x] Test policy-denied, permission-denied, rate-limited, and success cases.
+      Gate tests cover the first three plus empty/oversized content and mention
+      neutralisation; mock-Discord tests cover success, `403`, and a `429` that
+      is waited out; protocol tests cover the disabled and unlisted-channel
+      refusals end to end.
 - [ ] Implement edit-own-message only after ownership checks.
 - [ ] Implement delete-own-message only with trustworthy confirmation.
 - [ ] Implement reactions only after separate policy tests.
-- [ ] Do not add bulk deletion or mass moderation to v1.
+- [x] Do not add bulk deletion or mass moderation to v1. Nothing in this phase
+      can edit, delete or bulk-delete.
 
 **Exit criteria:** Write operations are opt-in, bounded, audited, and safe against accidental mentions.
 
 ## Phase 8 — Observability and operational hardening
 
-- [ ] Add correlation IDs and tracing spans. *(no request or trace id is
-      generated or attached to a tool execution; `docs/SECURITY.md` §7 tracks it
-      as outstanding)*
+- [x] Add correlation IDs and tracing spans. Each tool call allocates an id
+      carried in an `mcp.tool` span and in a task-local; the gate opens a nested
+      `discord.call` span per Discord request and stamps the id on every audit
+      record, so two requests from one call can be joined without recording
+      arguments. HTTP requests carry their own id in an `http.request` span.
 - [x] Redact authorization headers and secrets unconditionally. `redact()`
       strips `Bot <token>` and `Bearer <token>` shapes and the values of
       `authorization`, `x-api-key` and `token` keys whatever the secret is, and
@@ -195,21 +215,25 @@ and disconnect recovery; event replay after a reconnect (resumption) is not.
       (bind, authentication, write state), and every startup failure carries a
       stable error category and exit code. `docs/SETUP.md` §9 maps symptoms to
       fixes.
-- [ ] Add graceful shutdown and cancellation. *(STDIO stops when the client
-      closes stdin, which is the protocol's own shutdown; the HTTP listener has
-      no graceful drain and Ctrl+C is ordinary process termination)*
-- [ ] Test malformed API responses and network interruptions. *(malformed bodies,
-      slow responses and the retry budget are covered by
-      `an_unparsable_body_maps_to_network_error`, `a_slow_response_times_out` and
-      `retries_are_bounded_and_report_the_discord_category`; a connection reset
-      or drop mid-body is not)*
-- [ ] Test ambiguous write outcomes and no blind retries. *(no write path exists
-      yet, so there is no ambiguous write outcome to test; reads retry only
-      transient failures, bounded by `discord.max_retries`, and that budget is
-      tested)*
-- [ ] Review dependency vulnerabilities and update policy. *(every dependency is
-      pinned exactly and `Cargo.lock` is committed, but no `cargo audit` run or
-      written vulnerability-response policy exists)*
+- [x] Add graceful shutdown and cancellation. The HTTP listener uses axum's
+      graceful shutdown on Ctrl+C: it stops accepting, finishes requests already
+      being served (each is bounded by `http.request_timeout_seconds`) and logs
+      the stop. STDIO keeps its protocol shutdown on stdin close. No automated
+      test drives a real signal; that remains a manual check.
+- [x] Test malformed API responses and network interruptions. Malformed bodies,
+      slow responses, the retry budget and a connection dropped mid-body are
+      covered (`an_unparsable_body_maps_to_network_error`,
+      `a_truncated_response_fails_without_a_retry`, `a_slow_response_times_out`,
+      `retries_are_bounded_and_report_the_discord_category`).
+- [x] Test ambiguous write outcomes and no blind retries. A timed-out write and
+      a `500` on a write are each sent exactly once and surface the error
+      (`a_timed_out_write_is_never_resent`, `a_server_error_on_a_write_is_not_retried`),
+      and a write rejected with `403` is not retried either.
+- [ ] Review dependency vulnerabilities and update policy. *(policy is written
+      in `docs/DEPENDENCIES.md`: exact pins, a committed lock file, `cargo audit`
+      before each release. `cargo audit` is not installed in this environment, so
+      no advisory scan has been run against this tree — the scan is the remaining
+      work, not the policy)*
 
 **Exit criteria:** Operational diagnostics are useful without leaking credentials or message content.
 
@@ -259,8 +283,9 @@ and disconnect recovery; event replay after a reconnect (resumption) is not.
 
 These are signed off against the release artifact, not the working tree, so they
 stay open until Phases 7–9 land. Several already hold at the current commit and
-will be re-run then: 132 tests, `fmt`, Clippy, the release build, token-redaction
-coverage, no self-bot path, no write tools, mass mentions rejected by validation.
+will be re-run then: 151 tests, `fmt`, Clippy, the release build, token-redaction
+coverage, no self-bot path, writes off by default, mass mentions rejected by
+validation.
 
 - [ ] All tests pass.
 - [ ] `cargo fmt --check` passes.

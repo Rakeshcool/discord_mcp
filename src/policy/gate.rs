@@ -9,6 +9,10 @@
 //! Order per operation: feature flag, target allowlists, page limit, then a
 //! concurrency permit, then — only when a guild allowlist narrows the scope —
 //! resolving which guild a channel belongs to, then the request itself.
+//!
+//! Writes add two things: the content itself is a policy input (length limit and
+//! mention neutralisation, applied before the request is built), and every
+//! attempt produces one audit record whatever its outcome.
 
 use std::fmt;
 use std::future::Future;
@@ -16,6 +20,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tracing::Instrument;
 
 use crate::discord::client::DiscordApi;
 use crate::discord::ids::{ChannelId, GuildId, MessageId, UserId};
@@ -72,9 +77,14 @@ impl PolicyGate {
         target: AuditTarget,
         body: impl Future<Output = Result<T, AppError>>,
     ) -> Result<T, AppError> {
-        match body.await {
+        let correlation = crate::observability::correlation::current();
+        let outcome = body
+            .instrument(tracing::debug_span!("discord.call", action))
+            .await;
+        match outcome {
             Ok(value) => {
-                self.audit.record(&AuditEvent::allowed(action, target));
+                self.audit
+                    .record(&AuditEvent::allowed(action, target).with_correlation(correlation));
                 Ok(value)
             }
             Err(error) => {
@@ -82,12 +92,63 @@ impl PolicyGate {
                     error.category(),
                     ErrorCategory::PolicyBlocked | ErrorCategory::InvalidArgument
                 ) {
-                    self.audit
-                        .record(&AuditEvent::denied(action, target, error.category()));
+                    self.audit.record(
+                        &AuditEvent::denied(action, target, error.category())
+                            .with_correlation(correlation),
+                    );
                 }
                 Err(error)
             }
         }
+    }
+
+    /// Run `body`, recording exactly one outcome for a write attempt.
+    ///
+    /// A write must never be invisible in the audit trail, so unlike a read this
+    /// records every outcome: the policy decision when policy decided, and a
+    /// `Failed` record when the attempt got past policy and Discord rejected it.
+    /// Exactly one record per attempt, so a count of `discord_send_message`
+    /// records is a count of send attempts.
+    ///
+    /// Only `POLICY_BLOCKED` is a denial here. Policy's own `INVALID_ARGUMENT`
+    /// refusals are recorded by the caller before reaching this point, so an
+    /// `INVALID_ARGUMENT` that arrives here came from Discord (`400`/`422`) and
+    /// is a failure, not a policy decision.
+    async fn run_write<T>(
+        &self,
+        action: &'static str,
+        target: AuditTarget,
+        body: impl Future<Output = Result<T, AppError>>,
+    ) -> Result<T, AppError> {
+        let correlation = crate::observability::correlation::current();
+        let outcome = body
+            .instrument(tracing::debug_span!("discord.call", action))
+            .await;
+        match outcome {
+            Ok(value) => {
+                self.audit
+                    .record(&AuditEvent::allowed(action, target).with_correlation(correlation));
+                Ok(value)
+            }
+            Err(error) => {
+                let event = match error.category() {
+                    ErrorCategory::PolicyBlocked => {
+                        AuditEvent::denied(action, target, error.category())
+                    }
+                    category => AuditEvent::failed(action, target, category),
+                };
+                self.audit.record(&event.with_correlation(correlation));
+                Err(error)
+            }
+        }
+    }
+
+    /// Record a refusal of a write that policy decided before any request.
+    fn record_refusal(&self, action: &'static str, target: AuditTarget, error: &AppError) {
+        self.audit.record(
+            &AuditEvent::denied(action, target, error.category())
+                .with_correlation(crate::observability::correlation::current()),
+        );
     }
 
     /// Check which guild a channel belongs to, when guilds are restricted.
@@ -258,6 +319,35 @@ impl DiscordApi for PolicyGate {
                 self.inner.get_member(guild_id, user_id).await
             },
         )
+        .await
+    }
+
+    async fn send_message(
+        &self,
+        channel_id: &ChannelId,
+        content: &str,
+    ) -> Result<MessageSummary, AppError> {
+        const ACTION: &str = "discord_send_message";
+        let target = AuditTarget::for_channel(*channel_id);
+
+        // Policy first, so its refusal is recorded as a denial and anything that
+        // fails later is a failure. The write flag, length limit and mention
+        // neutralisation are one decision; the allowlist is the next.
+        let message = self
+            .policy
+            .prepare_outgoing_message(content)
+            .inspect_err(|error| {
+                self.record_refusal(ACTION, target, error);
+            })?;
+        self.policy.check_channel(channel_id).inspect_err(|error| {
+            self.record_refusal(ACTION, target, error);
+        })?;
+
+        self.run_write(ACTION, target, async {
+            let _permit = self.permit().await?;
+            self.authorize_channel_guild(channel_id).await?;
+            self.inner.send_message(channel_id, &message.content).await
+        })
         .await
     }
 }
