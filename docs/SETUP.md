@@ -4,9 +4,10 @@ End-to-end instructions for installing and using this MCP server: a Discord bot
 application, the build, configuration, both transports, client wiring, and the
 checks that tell you it is actually working.
 
-This build is **read-only**. It exposes eight read tools and one resource, and no
-tool that writes to Discord exists. Writes are planned for a later phase and
-disabled in configuration (`policy.write_enabled = false`).
+This build exposes eight read tools, one resource, and one audited write tool.
+`discord_send_message` refuses until writes are enabled (`policy.write_enabled =
+false` by default) and can only post to channels on `policy.channel_allowlist`.
+Nothing can edit, delete, react or bulk-delete.
 
 - Platform: Windows 11 x64 (`x86_64-pc-windows-msvc`). No WSL or Docker.
 - Transports: STDIO (default) and MCP Streamable HTTP (`/mcp`).
@@ -178,6 +179,7 @@ Settings that matter most (see `config/default.toml` for every key):
 
 | Key | Default | Meaning |
 |---|---|---|
+| `policy.write_enabled` | `false` | Turns on `discord_send_message`; requires a channel allowlist |
 | `server.transport` | `stdio` | `stdio`, `http`, or `both` |
 | `policy.read_enabled` | `true` | Turn the read tools on |
 | `policy.guild_allowlist` | `[]` | Empty means every guild the bot can see. List guild IDs to narrow it |
@@ -247,7 +249,7 @@ To use a custom configuration, add `"--config", "D:\\...\\config\\local.toml"` t
 
 ### What the server exposes
 
-| Tool | Arguments | Reads |
+| Tool | Arguments | What it does |
 |---|---|---|
 | `discord_list_guilds` | `limit?`, `after?` | Guilds the bot is in |
 | `discord_get_guild` | `guild_id` | One guild |
@@ -257,12 +259,33 @@ To use a custom configuration, add `"--config", "D:\\...\\config\\local.toml"` t
 | `discord_get_message` | `channel_id`, `message_id` | One message |
 | `discord_list_members` | `guild_id`, `limit?`, `after?` | Guild members (needs Server Members intent) |
 | `discord_get_member` | `guild_id`, `user_id` | One member |
+| `discord_send_message` | `channel_id`, `content` | Posts one message; refused unless writes are enabled |
 
 Resource: `discord://guilds` — the same guild listing as a resource, for clients
 that prefer resources over tools.
 
 Argument schemas reject unknown fields, and Discord snowflakes are decimal
 strings (`"1572365819281932408"`), never numbers.
+
+### Enabling writes
+
+Writes are off until you say otherwise, and enabling them requires a channel
+allowlist:
+
+```toml
+[policy]
+write_enabled = true
+channel_allowlist = ["1572365820133118035"]   # #general
+```
+
+`discord_send_message` can then post to those channels and no others. Four things
+apply to every send: mentions in the content are neutralised (a zero-width space
+is inserted) and the request carries an empty mention parse list; the body is
+limited by `policy.max_message_characters` in characters; each attempt writes one
+audit record to stderr (`allowed`, `denied` or `failed` with a category); and a
+failed send is never retried, because a retried `POST` may already have created
+the message. A `403` means the bot lacks Send Messages or channel access, and it
+surfaces as `PERMISSION_DENIED` rather than being retried.
 
 A first call to try — `discord_list_guilds` with no arguments — returns:
 
@@ -371,6 +394,9 @@ Notes for operators:
   long-lived event stream and is exempt from the request deadline.
 - `transport = "both"` runs STDIO and HTTP in one process over the same policy
   and the same bot token.
+- Ctrl+C stops the listener gracefully: it stops accepting, finishes the requests
+  already in flight (each bounded by `http.request_timeout_seconds`) and logs the
+  stop. STDIO stops when the client closes stdin.
 
 ### Behind a reverse proxy (TLS)
 
@@ -497,6 +523,7 @@ real binary, but a specific client's launch behaviour is unverified here.
 | HTTP `403` | Foreign `Host` or `Origin` | Call the bind address; add the origin to `allowed_origins` if a browser must reach it |
 | HTTP `400` | Missing `Mcp-Session-Id` on a follow-up request | Reuse the id returned by `initialize` |
 | Nothing on stdout | Normal until a client sends a frame — stdout is protocol-only | Logs are on stderr; set `RUST_LOG=debug` |
+| Need to trace one call across its Discord requests | Each tool call logs a `correlation` id | Set `RUST_LOG=debug` and follow that id through `mcp.tool` and `discord.call` records |
 
 Exit codes: `0` success, `1` internal failure, `2` usage/configuration error,
 `3` authentication failure, `4` policy refusal.
@@ -508,8 +535,10 @@ Exit codes: `0` success, `1` internal failure, `2` usage/configuration error,
 - The bot token lives in the environment or `.env` (git-ignored), never in a
   config file, client config, screenshot or commit.
 - The HTTP token is given to MCP clients; the bot token never is.
-- Keep `policy.write_enabled = false` and `policy.allow_mass_mentions = false`.
-  This build ships no write tools, so nothing can post regardless.
+- Keep `policy.write_enabled = false` unless you deliberately want
+  `discord_send_message`. With it enabled, `policy.channel_allowlist` must be
+  non-empty and is the only place the tool can post; `policy.allow_mass_mentions`
+  must stay `false` (validation refuses `true`).
 - Narrow `policy.guild_allowlist` and `policy.channel_allowlist` if the bot is in
   more than one server.
 - Keep the HTTP bind on loopback. For remote access, use a reverse proxy that

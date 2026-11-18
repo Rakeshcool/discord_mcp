@@ -1,4 +1,9 @@
-//! The read-only MCP tool surface.
+//! The MCP tool surface: eight read tools and one write tool.
+//!
+//! The write tool is registered unconditionally and refuses unless policy
+//! enables it: a client can discover that the capability exists and why it is
+//! unavailable, which is better than a tool that silently appears at
+//! `tools/list` time only on some deployments.
 //!
 //! Every handler parses its arguments into typed identifiers, then calls
 //! `state().discord()`, which is the policy gate — no handler holds a Discord
@@ -107,14 +112,28 @@ pub struct GetMemberArgs {
     pub user_id: String,
 }
 
+/// Arguments for `discord_send_message`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SendMessageArgs {
+    /// Discord channel ID, digits only. Must be on `policy.channel_allowlist`.
+    pub channel_id: String,
+    /// Message body. Mentions are neutralised and `policy.max_message_characters`
+    /// applies.
+    pub content: String,
+}
+
 /// Run a handler body, turning every application failure into a tool result.
 ///
 /// One place defines the error shape, so no tool can drift into returning a
 /// protocol error (which a client would render opaquely) for a policy denial.
 async fn tool_call<T: Serialize>(
+    tool: &'static str,
     body: impl Future<Output = Result<T, AppError>>,
 ) -> CallToolResult {
-    match body.await {
+    // One id per tool call, carried in the span and in the task-local so audit
+    // records from the policy gate join it without the gate taking an argument.
+    match crate::observability::correlation::scope_tool(tool, body).await {
         Ok(value) => match serde_json::to_string(&value) {
             Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
             Err(error) => CallToolResult::error(vec![ContentBlock::text(format!(
@@ -146,7 +165,7 @@ impl DiscordMcpServer {
         &self,
         Parameters(args): Parameters<ListGuildsArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        Ok(tool_call(async {
+        Ok(tool_call("discord_list_guilds", async {
             let limit = args.limit.unwrap_or(GUILDS_PAGE_MAX);
             let after = parse_optional(&args.after, GuildId::parse)?;
             self.state()
@@ -166,7 +185,7 @@ impl DiscordMcpServer {
         &self,
         Parameters(args): Parameters<GetGuildArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        Ok(tool_call(async {
+        Ok(tool_call("discord_get_guild", async {
             let guild_id = GuildId::parse(&args.guild_id)?;
             self.state().discord().get_guild(&guild_id).await
         })
@@ -182,7 +201,7 @@ impl DiscordMcpServer {
         &self,
         Parameters(args): Parameters<ListChannelsArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        Ok(tool_call(async {
+        Ok(tool_call("discord_list_channels", async {
             let guild_id = GuildId::parse(&args.guild_id)?;
             self.state().discord().list_channels(&guild_id).await
         })
@@ -198,7 +217,7 @@ impl DiscordMcpServer {
         &self,
         Parameters(args): Parameters<GetChannelArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        Ok(tool_call(async {
+        Ok(tool_call("discord_get_channel", async {
             let channel_id = ChannelId::parse(&args.channel_id)?;
             self.state().discord().get_channel(&channel_id).await
         })
@@ -214,7 +233,7 @@ impl DiscordMcpServer {
         &self,
         Parameters(args): Parameters<GetMessagesArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        Ok(tool_call(async {
+        Ok(tool_call("discord_get_messages", async {
             let channel_id = ChannelId::parse(&args.channel_id)?;
             let limit = args
                 .limit
@@ -241,7 +260,7 @@ impl DiscordMcpServer {
         &self,
         Parameters(args): Parameters<GetMessageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        Ok(tool_call(async {
+        Ok(tool_call("discord_get_message", async {
             let channel_id = ChannelId::parse(&args.channel_id)?;
             let message_id = MessageId::parse(&args.message_id)?;
             self.state()
@@ -261,7 +280,7 @@ impl DiscordMcpServer {
         &self,
         Parameters(args): Parameters<ListMembersArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        Ok(tool_call(async {
+        Ok(tool_call("discord_list_members", async {
             let guild_id = GuildId::parse(&args.guild_id)?;
             let limit = args.limit.unwrap_or(MEMBERS_PAGE_DEFAULT);
             let after = parse_optional(&args.after, UserId::parse)?;
@@ -282,10 +301,34 @@ impl DiscordMcpServer {
         &self,
         Parameters(args): Parameters<GetMemberArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        Ok(tool_call(async {
+        Ok(tool_call("discord_get_member", async {
             let guild_id = GuildId::parse(&args.guild_id)?;
             let user_id = UserId::parse(&args.user_id)?;
             self.state().discord().get_member(&guild_id, &user_id).await
+        })
+        .await)
+    }
+
+    #[tool(
+        name = "discord_send_message",
+        description = "Send one message to a Discord channel on policy.channel_allowlist. Writes are disabled by default; mentions are neutralised, the length limit applies, and every attempt is audited.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn discord_send_message(
+        &self,
+        Parameters(args): Parameters<SendMessageArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(tool_call("discord_send_message", async {
+            let channel_id = ChannelId::parse(&args.channel_id)?;
+            self.state()
+                .discord()
+                .send_message(&channel_id, &args.content)
+                .await
         })
         .await)
     }

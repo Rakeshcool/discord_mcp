@@ -513,3 +513,139 @@ async fn a_plaintext_non_loopback_base_is_refused_at_construction() {
 
     assert_eq!(error.category(), ErrorCategory::Configuration);
 }
+
+#[tokio::test]
+async fn a_sent_message_posts_once_with_mentions_disabled() {
+    let mock = MockDiscord::start(|_| MockResponse::json(message("100", "hello"))).await;
+    let api = adapter_for(&mock);
+
+    let sent = api
+        .send_message(&channel(CHANNEL_ID), "hello")
+        .await
+        .expect("the message is created");
+
+    assert_eq!(sent.id, MessageId::from_u64(100));
+    assert_eq!(sent.channel_id, channel(CHANNEL_ID));
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 1, "a write is posted exactly once");
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].route(), "/api/v10/channels/4004/messages");
+    assert_eq!(requests[0].json()["content"], "hello");
+    assert_eq!(
+        requests[0].json()["allowed_mentions"]["parse"]
+            .as_array()
+            .map(Vec::len),
+        Some(0),
+        "the request itself must disable mentions, not just the text: {:?}",
+        requests[0].body
+    );
+}
+
+#[tokio::test]
+async fn a_forbidden_send_maps_to_permission_denied_without_a_retry() {
+    let mock = MockDiscord::start(|_| MockResponse::error(403, 50013, "Missing Permissions")).await;
+    let api = adapter_for(&mock);
+
+    let error = api
+        .send_message(&channel(CHANNEL_ID), "hello")
+        .await
+        .expect_err("a 403 must fail");
+
+    assert_eq!(error.category(), ErrorCategory::Permission);
+    assert_eq!(
+        mock.request_count(),
+        1,
+        "a refused write is surfaced, not retried"
+    );
+}
+
+#[tokio::test]
+async fn a_truncated_response_fails_without_a_retry() {
+    let mock =
+        MockDiscord::start(|_| MockResponse::json(guild_detail()).declare_length(4096)).await;
+    let api = adapter_with(&mock, 2, 3);
+
+    let error = api
+        .get_guild(&guild(GUILD_ID))
+        .await
+        .expect_err("an incomplete body must fail");
+
+    assert_eq!(error.category(), ErrorCategory::Network);
+    assert_eq!(
+        mock.request_count(),
+        1,
+        "a body that could not be read is not retried"
+    );
+}
+
+#[tokio::test]
+async fn a_timed_out_write_is_never_resent() {
+    let mock = MockDiscord::start(|_| {
+        MockResponse::json(message("100", "hello")).delay(Duration::from_secs(2))
+    })
+    .await;
+    let api = adapter_with(&mock, 1, 3);
+
+    let error = api
+        .send_message(&channel(CHANNEL_ID), "hello")
+        .await
+        .expect_err("the timeout must surface");
+
+    assert_eq!(error.category(), ErrorCategory::Timeout);
+    assert_eq!(
+        mock.request_count(),
+        1,
+        "a write whose outcome is unknown must not be resent"
+    );
+}
+
+#[tokio::test]
+async fn a_server_error_on_a_write_is_not_retried() {
+    let mock = MockDiscord::start(|_| MockResponse::error(500, 0, "Internal Server Error")).await;
+    let api = adapter_with(&mock, 2, 3);
+
+    let error = api
+        .send_message(&channel(CHANNEL_ID), "hello")
+        .await
+        .expect_err("a persistent 500 must fail");
+
+    assert_eq!(error.category(), ErrorCategory::DiscordApi);
+    assert_eq!(
+        mock.request_count(),
+        1,
+        "the read retry budget must not apply to a write"
+    );
+}
+
+#[tokio::test]
+async fn a_rate_limited_send_waits_out_the_limit_and_posts_once() {
+    let attempts = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let mock = MockDiscord::start(move |_| {
+        if attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            MockResponse::json(
+                r#"{"message":"You are being rate limited.","retry_after":1.0,"global":false}"#,
+            )
+            .status(429)
+            .header("Retry-After", "1")
+            .header("X-RateLimit-Scope", "shared")
+            .header("X-RateLimit-Bucket", "mock-bucket")
+        } else {
+            MockResponse::json(message("100", "hello"))
+        }
+    })
+    .await;
+    let api = adapter_with(&mock, 5, 0);
+
+    let sent = api
+        .send_message(&channel(CHANNEL_ID), "hello")
+        .await
+        .expect("a rejected attempt may be resent after the limit clears");
+
+    assert_eq!(sent.id, MessageId::from_u64(100));
+    assert_eq!(
+        mock.request_count(),
+        2,
+        "429, then exactly one successful post"
+    );
+}

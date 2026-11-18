@@ -10,8 +10,9 @@ no published checksum and no CHANGELOG-dated version, so the `0.1.0` in
 `Cargo.toml` identifies this working tree rather than a published build. Phase 9
 of `TASKS.md` covers packaging, Phase 10 the release gate.
 
-This build is read-only. It speaks MCP over STDIO and Streamable HTTP and reads
-Discord through an official bot identity. No tool writes to Discord.
+This build reads Discord through an official bot identity and speaks MCP over
+STDIO and Streamable HTTP. Its one write tool posts a message, only to allowlisted
+channels, and only when writes are deliberately enabled.
 
 ### Discord access
 
@@ -81,6 +82,36 @@ Discord through an official bot identity. No tool writes to Discord.
   refused with `503` and `Retry-After` rather than queued, and a streaming
   response holds its slot until its last byte.
 
+### Writes
+
+- `discord_send_message`: posts one message to a channel on
+  `policy.channel_allowlist`. Disabled by default (`policy.write_enabled =
+  false`), and validation refuses to enable it without a non-empty allowlist.
+- The content passes policy before the request exists: non-empty, within
+  `policy.max_message_characters`, and mention-neutralised. The request also
+  carries `allowed_mentions: {parse: []}`, so mentions are disabled twice over.
+- Each attempt produces exactly one audit record — `allowed`, `denied` (policy)
+  or `failed` (Discord rejected it, with the category) — carrying action, channel
+  and outcome, never the body.
+- Writes are never retried: a `POST` retried after an ambiguous failure could
+  duplicate the message. A `429` is still waited out and resent, because Discord
+  rejected that attempt.
+- The tool is registered even while disabled, so a client sees the capability and
+  the `POLICY_BLOCKED` reason instead of a tool that silently appears on some
+  deployments.
+
+### Observability
+
+- Every tool call gets a correlation id, carried in an `mcp.tool` span and in a
+  task-local; each Discord request inside it opens a nested `discord.call` span,
+  and every audit record carries the id of the call that produced it. HTTP
+  requests carry their own `http.request` id.
+- Ctrl+C now drains the HTTP listener: it stops accepting, finishes in-flight
+  requests (each already bounded by the request deadline) and logs the stop.
+- A connection dropped mid-body is covered by a test and fails as
+  `NETWORK_ERROR` without a retry; a write that times out or gets a `500` is sent
+  exactly once, so an unknown outcome can never become a duplicate message.
+
 ### Security
 
 - Bot identity only: no self-bot path, no user token, no gateway connection.
@@ -125,10 +156,10 @@ Discord through an official bot identity. No tool writes to Discord.
 
 ### Verified
 
-- 132 tests pass: 76 unit, 24 integration (the real twilight client against a
-  local mock Discord over a socket), 22 protocol (the real binary as a child
+- 151 tests pass: 84 unit, 30 integration (the real twilight client against a
+  local mock Discord over a socket), 24 protocol (the real binary as a child
   process over stdio, plus HTTP refusals, session lifecycle and a dropped event
-  stream), 10 transport unit tests.
+  stream), 13 library unit tests.
 - `cargo fmt --all --check`, `cargo clippy --all-targets --all-features --
   -D warnings` and `cargo build --release` (`x86_64-pc-windows-msvc`) pass.
 - Read tools exercised end to end against a real guild over both transports,
@@ -137,8 +168,8 @@ Discord through an official bot identity. No tool writes to Discord.
 
 ### Not in this build
 
-- No write tools (Phase 7): no send, edit, delete, reaction or destructive
-  operation.
+- More write operations (Phase 7): the send tool exists, but nothing can edit,
+  delete, react or bulk-delete, and it stays off unless deliberately enabled.
 - No TLS termination; a non-loopback bind belongs behind a proxy that terminates
   TLS, and `docs/SETUP.md` §7 documents the settings it must use.
 - No correlation IDs on tool executions, no graceful drain of the HTTP listener,

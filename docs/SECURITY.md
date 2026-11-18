@@ -97,14 +97,33 @@ session, and no database — the process holds nothing beyond the current call.
 - **Concurrency is capped by backpressure.** `policy.max_concurrent_requests`
   bounds in-flight Discord requests with a semaphore. Waiting cannot fail open:
   a caller only proceeds when a slot frees.
+- **Every tool call is correlated.** Each call gets an id in an `mcp.tool`
+  span and in a task-local; each Discord request inside it opens a `discord.call`
+  span, and every audit record carries the calling id. Two requests from one call
+  can be joined without recording arguments or content. HTTP requests carry their
+  own `http.request` id.
 - **Audit records are content-free.** Each policy decision produces an
   `AuditEvent` (action, target IDs, outcome, category) through an injectable
   `AuditSink`; the shipping sink logs to stderr, denials at `info`. There is no
   field in which a message body or token could be recorded.
-- **The MCP surface is read-only and strict.** Eight read tools and one resource
-  (`discord://guilds`) are registered; no write or destructive tool exists in
-  this build. Argument schemas use `deny_unknown_fields`, so an unknown argument
-  is refused rather than ignored, and every tool is annotated `readOnlyHint`.
+- **One write tool, off by default.** `discord_send_message` is registered
+  unconditionally so a client can see the capability and why it is refused, and
+  the gate rejects it while `policy.write_enabled` is false. It cannot edit,
+  delete, react or bulk-delete. Argument schemas use `deny_unknown_fields`, so an
+  unknown argument is refused rather than ignored, and the read-only hint is
+  truthful per tool: `true` for the eight reads, `false` for the write.
+- **A write is four checks before any request.** Write flag, channel allowlist,
+  character limit and mention neutralisation are decided in policy from local
+  configuration; the content the adapter receives is the neutralised text, and
+  the request also carries an empty mention parse list. A policy refusal means
+  the adapter was never called, which the tests assert directly.
+- **Every write attempt leaves exactly one audit record.** `allowed`,
+  `denied` (policy refusal) or `failed` (Discord rejected an allowed attempt,
+  with its category) — action, channel and outcome, never the message body.
+- **A write is never retried.** A `POST` retried after a timeout, a reset or a
+  `5xx` may already have succeeded, so the adapter makes one attempt; a `429` is
+  safe to resend because Discord rejected that attempt, and twilight's limiter
+  handles it.
 - **HTTP authenticates before it serves.** The Streamable HTTP transport resolves
   its bearer token from `http.auth_token_env` before binding, so a server that
   cannot authenticate its callers never opens a socket. The token is compared in
@@ -150,9 +169,11 @@ session, and no database — the process holds nothing beyond the current call.
 - The process does not persist Discord data. There is no cache, database or
   message archive.
 - Message bodies are fetched per call and dropped after the response is built.
-- Audit records contain the action, target IDs, outcome and error category —
-  never content, never credentials. Timestamps and correlation IDs join them with
-  the write phase, which is the first place a durable record is required.
+- Audit records contain the action, target IDs, outcome, error category and the
+  correlation id of the tool call that produced them — never content, never
+  credentials. The id is what joins two Discord requests made for one call; the
+  timestamp comes from the log line. Nothing is persisted: there is no durable
+  audit store in this build.
 - Configuration files hold no secrets. Only environment variable **names**
   appear in configuration and in `.env.example`.
 
@@ -186,8 +207,6 @@ session, and no database — the process holds nothing beyond the current call.
 | Control | Phase |
 |---|---|
 | Draft/review prompts | not scheduled (optional in the specification) |
-| `discord_send_message` with pre-flight policy and audit record | Phase 7 |
-| Correlation IDs on every tool execution | Phase 8 |
 | Packaging: SHA-256 checksum, clean-install test, first tag | Phase 9 |
 | Release gate: full test suite, `fmt`, Clippy, acceptance criteria | Phase 10 |
 

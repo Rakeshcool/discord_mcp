@@ -9,7 +9,9 @@
 //!   type escapes this module,
 //! - clamping page sizes to Discord's maxima.
 //!
-//! Every method is a read. Nothing here can create, edit or delete a message.
+//! One method writes: `send_message`. It posts with mentions explicitly
+//! disabled and without retries, because a retried `POST` may duplicate a
+//! message. Nothing here can edit or delete.
 
 use std::future::{Future, IntoFuture};
 use std::time::Duration;
@@ -112,15 +114,47 @@ impl TwilightDiscord {
         })
     }
 
+    /// A read: attempts under one timeout each, retrying transient failures
+    /// within the configured budget.
+    async fn send<T, F>(
+        &self,
+        operation: &'static str,
+        make: impl FnMut() -> F,
+    ) -> Result<T, AppError>
+    where
+        F: Future<Output = Result<T, AttemptError>>,
+    {
+        self.attempt(operation, self.max_retries, make).await
+    }
+
+    /// A write: one attempt, no retry.
+    ///
+    /// Retrying a `POST` after a timeout, a reset or a `5xx` is ambiguous — the
+    /// message may already exist — and a duplicate in a channel is worse than an
+    /// error the caller can read and decide about. Rate limits are not affected:
+    /// twilight's limiter waits out a `429` and resends, which is safe because
+    /// Discord rejected that attempt.
+    async fn send_once<T, F>(
+        &self,
+        operation: &'static str,
+        make: impl FnMut() -> F,
+    ) -> Result<T, AppError>
+    where
+        F: Future<Output = Result<T, AttemptError>>,
+    {
+        self.attempt(operation, 0, make).await
+    }
+
     /// The one request path: attempts under one timeout each, retrying
-    /// transient failures within the configured budget.
+    /// transient failures up to `retries` times.
     ///
     /// The timeout covers a whole attempt — rate-limit waits included — so a
     /// caller never waits longer than configured, whatever retry loop twilight
     /// runs internally.
-    async fn send<T, F>(
+    async fn attempt<T, F>(
         &self,
         operation: &'static str,
+        retries: u32,
         mut make: impl FnMut() -> F,
     ) -> Result<T, AppError>
     where
@@ -146,7 +180,7 @@ impl TwilightDiscord {
                 Ok(Err(AttemptError::Request(error))) => error,
             };
 
-            if attempt >= self.max_retries || !is_transient(&error) {
+            if attempt >= retries || !is_transient(&error) {
                 return Err(map_discord_error(operation, &error));
             }
 
@@ -386,6 +420,30 @@ impl DiscordApi for TwilightDiscord {
             .await?;
 
         Ok(member_summary(member))
+    }
+
+    async fn send_message(
+        &self,
+        channel_id: &ChannelId,
+        content: &str,
+    ) -> Result<MessageSummary, AppError> {
+        // Explicit, not implied: no parsed mentions, no role or user mentions,
+        // no reply ping. Even though policy has already neutralised the text,
+        // the request says so too. It is borrowed by the builder, so it lives
+        // here rather than inside the closure.
+        let allowed_mentions = twilight_model::channel::message::AllowedMentions::default();
+        let message: Message = self
+            .send_once("discord_send_message", || {
+                read_one(IntoFuture::into_future(
+                    self.client
+                        .create_message(Id::new(channel_id.get()))
+                        .content(content)
+                        .allowed_mentions(Some(&allowed_mentions)),
+                ))
+            })
+            .await?;
+
+        Ok(message_summary(message))
     }
 }
 

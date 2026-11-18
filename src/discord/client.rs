@@ -5,8 +5,9 @@
 //! network, and is what lets the policy layer (next phase) sit between tool
 //! arguments and real requests.
 //!
-//! Every method is a read. Writes arrive in a later phase behind separate
-//! policy checks, and no method here can create, modify or delete anything.
+//! One method writes: [`DiscordApi::send_message`]. It is separate from the read
+//! surface on purpose, it is reached only through the policy gate, and it cannot
+//! edit or delete anything.
 
 use async_trait::async_trait;
 
@@ -75,4 +76,16 @@ pub trait DiscordApi: Send + Sync + std::fmt::Debug {
         guild_id: &GuildId,
         user_id: &UserId,
     ) -> Result<MemberSummary, AppError>;
+
+    /// Send one message to a channel.
+    ///
+    /// `content` has already passed policy: it is non-empty, within the configured
+    /// length, and mention-neutralised. An implementation must still send it with
+    /// mentions explicitly disabled, so a formatting change upstream can never
+    /// turn into a notification.
+    async fn send_message(
+        &self,
+        channel_id: &ChannelId,
+        content: &str,
+    ) -> Result<MessageSummary, AppError>;
 }

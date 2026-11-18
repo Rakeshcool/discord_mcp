@@ -17,6 +17,11 @@ pub enum AuditOutcome {
     Allowed,
     /// Policy refused the operation.
     Denied,
+    /// Policy allowed the operation and Discord rejected it.
+    ///
+    /// Writes produce exactly one record per attempt, so an attempt that gets
+    /// past policy and then fails at Discord must not disappear from the trail.
+    Failed,
 }
 
 impl AuditOutcome {
@@ -25,6 +30,7 @@ impl AuditOutcome {
         match self {
             Self::Allowed => "allowed",
             Self::Denied => "denied",
+            Self::Failed => "failed",
         }
     }
 }
@@ -73,8 +79,14 @@ pub struct AuditEvent {
     pub outcome: AuditOutcome,
     /// What the operation was aimed at.
     pub target: AuditTarget,
-    /// Why policy refused, for denied records.
+    /// Why policy refused, for denied and failed records.
     pub reason: Option<ErrorCategory>,
+    /// The tool call this decision belongs to, when there is one.
+    ///
+    /// A tool call can produce several records (guild resolution, then the
+    /// operation itself); the id is what ties them together without putting any
+    /// content in the record.
+    pub correlation: Option<u64>,
 }
 
 impl AuditEvent {
@@ -85,6 +97,7 @@ impl AuditEvent {
             outcome: AuditOutcome::Allowed,
             target,
             reason: None,
+            correlation: None,
         }
     }
 
@@ -95,7 +108,25 @@ impl AuditEvent {
             outcome: AuditOutcome::Denied,
             target,
             reason: Some(reason),
+            correlation: None,
         }
+    }
+
+    /// A record for an attempt policy allowed that failed at Discord.
+    pub const fn failed(action: &'static str, target: AuditTarget, reason: ErrorCategory) -> Self {
+        Self {
+            action,
+            outcome: AuditOutcome::Failed,
+            target,
+            reason: Some(reason),
+            correlation: None,
+        }
+    }
+
+    /// Attach the tool call this decision belongs to.
+    pub const fn with_correlation(mut self, correlation: Option<u64>) -> Self {
+        self.correlation = correlation;
+        self
     }
 }
 
@@ -117,6 +148,7 @@ impl AuditSink for LoggingAudit {
             AuditOutcome::Allowed => tracing::debug!(
                 action = event.action,
                 outcome = event.outcome.as_str(),
+                correlation = ?event.correlation,
                 guild = ?event.target.guild,
                 channel = ?event.target.channel,
                 "policy allowed a Discord operation"
@@ -124,10 +156,20 @@ impl AuditSink for LoggingAudit {
             AuditOutcome::Denied => tracing::info!(
                 action = event.action,
                 outcome = event.outcome.as_str(),
+                correlation = ?event.correlation,
                 guild = ?event.target.guild,
                 channel = ?event.target.channel,
                 code = ?event.reason.map(ErrorCategory::code),
                 "policy denied a Discord operation"
+            ),
+            AuditOutcome::Failed => tracing::warn!(
+                action = event.action,
+                outcome = event.outcome.as_str(),
+                correlation = ?event.correlation,
+                guild = ?event.target.guild,
+                channel = ?event.target.channel,
+                code = ?event.reason.map(ErrorCategory::code),
+                "an allowed Discord operation failed"
             ),
         }
     }

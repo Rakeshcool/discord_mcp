@@ -32,6 +32,7 @@ enum Call {
     GetMessage(u64, u64),
     ListMembers(u64),
     GetMember(u64, u64),
+    SendMessage(u64, String),
 }
 
 #[derive(Debug)]
@@ -229,6 +230,16 @@ impl DiscordApi for FakeDiscord {
         self.record(Call::GetMember(guild_id.get(), user_id.get()))
             .await?;
         Ok(member_summary(user_id.get()))
+    }
+
+    async fn send_message(
+        &self,
+        channel_id: &ChannelId,
+        content: &str,
+    ) -> Result<MessageSummary, AppError> {
+        self.record(Call::SendMessage(channel_id.get(), content.to_string()))
+            .await?;
+        Ok(message_summary(100))
     }
 }
 
@@ -626,6 +637,229 @@ async fn the_concurrency_cap_queues_instead_of_exceeding_itself() {
     assert!(first.await.expect("first task").is_ok());
     assert!(second.await.expect("second task").is_ok());
     assert_eq!(fake.calls(), vec![Call::GetGuild(1), Call::GetGuild(1)]);
+}
+
+fn write_enabled(channels: &[&str]) -> Policy {
+    policy(PolicyConfig {
+        write_enabled: true,
+        channel_allowlist: channels.iter().map(|id| id.to_string()).collect(),
+        ..PolicyConfig::default()
+    })
+}
+
+#[tokio::test]
+async fn writes_are_refused_by_default_and_the_refusal_is_audited() {
+    let fake = Arc::new(FakeDiscord::new());
+    let audit = Arc::new(RecordingAudit::default());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(PolicyConfig::default()),
+        Arc::clone(&audit),
+    );
+
+    let error = gated
+        .send_message(&channel(4), "hello")
+        .await
+        .expect_err("writes are off by default");
+
+    assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+    assert!(fake.calls().is_empty(), "no Discord call may be made");
+    assert_eq!(
+        audit.events(),
+        vec![AuditEvent::denied(
+            "discord_send_message",
+            AuditTarget::for_channel(channel(4)),
+            ErrorCategory::PolicyBlocked
+        )]
+    );
+}
+
+#[tokio::test]
+async fn a_write_to_an_unlisted_channel_is_refused_before_any_call() {
+    let fake = Arc::new(FakeDiscord::new());
+    let gated = gate(
+        Arc::clone(&fake),
+        write_enabled(&["4"]),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    let error = gated
+        .send_message(&channel(5), "hello")
+        .await
+        .expect_err("channel 5 is not on the allowlist");
+
+    assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+    assert!(fake.calls().is_empty());
+}
+
+#[tokio::test]
+async fn an_allowlisted_write_sends_neutralised_content_and_is_audited() {
+    let fake = Arc::new(FakeDiscord::new());
+    let audit = Arc::new(RecordingAudit::default());
+    let gated = gate(Arc::clone(&fake), write_enabled(&["4"]), Arc::clone(&audit));
+
+    let sent = gated
+        .send_message(&channel(4), "@everyone hi <@123>")
+        .await
+        .expect("an allowlisted channel may be written to");
+
+    assert_eq!(sent.id, MessageId::from_u64(100));
+    let calls = fake.calls();
+    assert_eq!(calls.len(), 1);
+    let Call::SendMessage(target, content) = &calls[0] else {
+        panic!("expected one send, got {:?}", calls[0]);
+    };
+    assert_eq!(*target, 4);
+    assert!(
+        !content.contains("@everyone") && !content.contains("<@"),
+        "a mention must not survive to the request: {content:?}"
+    );
+    assert!(
+        content.contains("@\u{200b}everyone") && content.contains("<\u{200b}@123>"),
+        "the mention stays readable but unparsed: {content:?}"
+    );
+    assert_eq!(
+        audit.events(),
+        vec![AuditEvent::allowed(
+            "discord_send_message",
+            AuditTarget::for_channel(channel(4))
+        )]
+    );
+}
+
+#[tokio::test]
+async fn an_empty_or_oversized_write_is_refused_before_any_call() {
+    let fake = Arc::new(FakeDiscord::new());
+    let audit = Arc::new(RecordingAudit::default());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(PolicyConfig {
+            write_enabled: true,
+            channel_allowlist: vec!["4".to_string()],
+            max_message_characters: 10,
+            ..PolicyConfig::default()
+        }),
+        Arc::clone(&audit),
+    );
+
+    let empty = gated
+        .send_message(&channel(4), "   ")
+        .await
+        .expect_err("an empty body must be refused");
+    let long = gated
+        .send_message(&channel(4), "01234567890")
+        .await
+        .expect_err("eleven characters exceed the limit of ten");
+
+    assert_eq!(empty.category(), ErrorCategory::InvalidArgument);
+    assert_eq!(long.category(), ErrorCategory::InvalidArgument);
+    assert!(fake.calls().is_empty());
+    assert_eq!(
+        audit.events().len(),
+        2,
+        "a refused attempt still produces a record"
+    );
+}
+
+#[tokio::test]
+async fn a_permission_failure_on_a_write_is_audited_as_failed() {
+    let fake = Arc::new(FakeDiscord::new().failing(AppError::new(
+        ErrorCategory::Permission,
+        "discord_send_message failed: Missing Permissions",
+    )));
+    let audit = Arc::new(RecordingAudit::default());
+    let gated = gate(Arc::clone(&fake), write_enabled(&["4"]), Arc::clone(&audit));
+
+    let error = gated
+        .send_message(&channel(4), "hello")
+        .await
+        .expect_err("Discord refused the send");
+
+    assert_eq!(error.category(), ErrorCategory::Permission);
+    let events = audit.events();
+    assert_eq!(events.len(), 1, "one record per attempt");
+    assert_eq!(events[0].outcome, AuditOutcome::Failed);
+    assert_eq!(events[0].reason, Some(ErrorCategory::Permission));
+}
+
+#[tokio::test]
+async fn a_discord_side_invalid_argument_is_a_failure_not_a_policy_denial() {
+    let fake = Arc::new(FakeDiscord::new().failing(AppError::new(
+        ErrorCategory::InvalidArgument,
+        "discord_send_message failed: Discord returned 400: invalid message fields",
+    )));
+    let audit = Arc::new(RecordingAudit::default());
+    let gated = gate(Arc::clone(&fake), write_enabled(&["4"]), Arc::clone(&audit));
+
+    let error = gated
+        .send_message(&channel(4), "hello")
+        .await
+        .expect_err("Discord rejected the request");
+
+    assert_eq!(error.category(), ErrorCategory::InvalidArgument);
+    assert_eq!(
+        audit.events()[0].outcome,
+        AuditOutcome::Failed,
+        "policy allowed this attempt; Discord is what refused it"
+    );
+}
+
+#[tokio::test]
+async fn a_rate_limited_write_is_returned_unchanged_and_audited() {
+    let fake = Arc::new(
+        FakeDiscord::new().failing(AppError::new(ErrorCategory::RateLimited, "slow down")),
+    );
+    let audit = Arc::new(RecordingAudit::default());
+    let gated = gate(Arc::clone(&fake), write_enabled(&["4"]), Arc::clone(&audit));
+
+    let error = gated
+        .send_message(&channel(4), "hello")
+        .await
+        .expect_err("the limiter is exhausted");
+
+    assert_eq!(error.category(), ErrorCategory::RateLimited);
+    assert_eq!(
+        fake.calls(),
+        vec![Call::SendMessage(4, "hello".to_string())],
+        "the gate neither hides nor retries a rate limit"
+    );
+    assert_eq!(audit.events()[0].outcome, AuditOutcome::Failed);
+    assert_eq!(audit.events()[0].reason, Some(ErrorCategory::RateLimited));
+}
+
+#[tokio::test]
+async fn audit_records_carry_the_calling_tool_calls_correlation_id() {
+    use discord_mcp::observability::correlation;
+
+    let fake = Arc::new(FakeDiscord::new());
+    let audit = Arc::new(RecordingAudit::default());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(PolicyConfig {
+            guild_allowlist: vec!["1".to_string()],
+            ..PolicyConfig::default()
+        }),
+        Arc::clone(&audit),
+    );
+
+    let allowed = guild(1);
+    correlation::scope_tool("discord_get_guild", gated.get_guild(&allowed))
+        .await
+        .expect("an allowlisted guild is readable");
+    let denied = guild(2);
+    correlation::scope_tool("discord_get_guild", gated.get_guild(&denied))
+        .await
+        .expect_err("guild 2 is not allowlisted");
+
+    let events = audit.events();
+    assert_eq!(events.len(), 2);
+    let first = events[0]
+        .correlation
+        .expect("an allowed record must carry an id");
+    let second = events[1]
+        .correlation
+        .expect("a denied record must carry an id");
+    assert_ne!(first, second, "each tool call has its own id");
 }
 
 #[tokio::test]

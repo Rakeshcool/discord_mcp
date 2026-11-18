@@ -13,25 +13,28 @@ for the full specification, `TASKS.md` for the phased plan, and
 
 ## Status
 
-Through Phase 6 — read-only Discord access over STDIO and Streamable HTTP.
-Phases 7–10 (writes, operational hardening, packaging, release gate) are planned
-and not started.
+Through Phase 7 — read access over STDIO and Streamable HTTP, plus one audited
+write tool that is disabled by default. The remaining write operations (edit,
+delete, reactions) and Phases 8–10 are planned and not started.
 
 Implemented: typed configuration with fail-closed validation, stable error
 categories, secret wrapper, structural secret redaction, stderr-only logging,
-stdio MCP handshake, CLI (`serve`, `--validate-config`), CI; a twilight-backed
+per-call correlation ids and spans, stdio MCP handshake, CLI (`serve`,
+`--validate-config`), CI; a twilight-backed
 read adapter with timeouts, bounded retries and error mapping; a policy engine
 (flags, guild/channel allowlists, page limits, concurrency cap, mention
 neutralisation, fail-closed approval, content-free audit records) enforced in
-front of the client; eight read tools plus the `discord://guilds` resource; and a
+front of the client; eight read tools, one audited write tool and the
+`discord://guilds` resource; and a
 Streamable HTTP transport with loopback defaults, a bearer-token gate, `Host` and
 `Origin` validation, request-body caps, a request deadline that also covers the
 response body, idle-session expiry and per-session isolation.
 
 Not implemented yet:
 
-- **Writes (Phase 7).** No tool writes to Discord: no send, edit, delete or
-  reaction, and no destructive operation.
+- **More writes (Phase 7).** `discord_send_message` exists, but nothing can
+  edit, delete, react or bulk-delete, and the write tool refuses until
+  `policy.write_enabled = true` with a non-empty `policy.channel_allowlist`.
 - **HTTP.** Session resumption (event replay after a reconnect) is unverified;
   session creation, acknowledgement, termination and disconnect recovery are
   covered by process tests.
@@ -152,7 +155,9 @@ the idle timeout after which a session is closed and its resources released.
 `http.max_in_flight_requests` bounds how many non-`GET` requests are handled at
 once; one beyond the cap is refused with `503` and `Retry-After` rather than
 queued. `GET /health` answers a small JSON status behind the same bearer token,
-contacts nothing, and stays available while the cap is saturated.
+contacts nothing, and stays available while the cap is saturated. Ctrl+C drains:
+the listener stops accepting and finishes the requests already in flight, each
+bounded by the request deadline.
 
 Bot creation, intents, permissions, client configuration, verification steps and
 troubleshooting are in [`docs/SETUP.md`](docs/SETUP.md);
