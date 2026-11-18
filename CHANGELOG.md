@@ -3,12 +3,14 @@
 Notable changes to `discord-mcp`, grouped by capability rather than by commit —
 `TASKS.md` is the unit of work in this project.
 
-## Unreleased — 0.1.0
+## v0.1.0 — 2026-11-18
 
-**Nothing is released or tagged.** There is no release tag, no packaged artifact,
-no published checksum and no CHANGELOG-dated version, so the `0.1.0` in
-`Cargo.toml` identifies this working tree rather than a published build. Phase 9
-of `TASKS.md` covers packaging, Phase 10 the release gate.
+**Tagged `v0.1.0` in this repository; nothing is published.** The tag names the
+first release commit, and
+`dist/discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256` records the SHA-256 of the
+release executable built from it. The executable itself is neither committed nor
+uploaded, and Phase 10 of `TASKS.md` is the release gate — it has not been signed
+off against a shipped artifact.
 
 This build reads Discord through an official bot identity and speaks MCP over
 STDIO and Streamable HTTP. Its one write tool posts a message, only to allowlisted
@@ -139,8 +141,31 @@ channels, and only when writes are deliberately enabled.
 - Secrets come from the environment only; `.env.example` lists variable names and
   the server never reads `.env` itself.
 
+### Release packaging
+
+- Annotated tag `v0.1.0` on the release commit; no remote exists, so nothing was
+  pushed.
+- `dist/discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256` holds the checksum of a
+  release build from that commit, plus the command that regenerates it. The
+  executable is not committed: the checksum describes the artifact a packager
+  builds, not a file in the tree.
+- The release build was verified from a clean checkout of the tag
+  (`git worktree`, `cargo build --release --locked`), then `--validate-config` and
+  a STDIO handshake from that tree — the guide's §3 path needs no file that is
+  not committed.
+
 ### Documentation
 
+- `docs/TOOLS.md`: per-tool reference — arguments, result JSON, annotations,
+  policy preconditions, error codes, retry and timeout rules, the
+  `discord://guilds` resource and an explicit list of what the surface does not
+  do.
+- `docs/SETUP.md` §4: where the bot token can live — client `env` block, shell
+  variable, `.env`, `setx`, and Windows Credential Manager read into the
+  environment by a launcher — with each option's trade-off. Native Credential
+  Manager lookup is documented as not implemented (`SPEC.md` lists it as
+  optional), including how to remove a stored credential.
+- `docs/SETUP.md` §8: artifact-integrity check against the committed checksum.
 - `docs/SETUP.md`: install-to-first-call guide — Discord application, bot token,
   privileged intents, least-privilege install URL, installation, secrets,
   configuration, both transports, verification, troubleshooting, removal.
@@ -165,6 +190,11 @@ channels, and only when writes are deliberately enabled.
 - `cargo-audit 0.23.0` against the committed `Cargo.lock`: 204 crates, 0
   vulnerabilities, 1 unmaintained-crate warning (`chrono`, reached through
   `rmcp`/`schemars`, no fixed version). Recorded in `docs/DEPENDENCIES.md`.
+- Release build from a clean checkout of the tag: `cargo build --release
+  --locked` on a fresh `git worktree`, then `--validate-config` and the STDIO
+  handshake from that tree. Not yet installed on a second machine.
+- SHA-256 of that executable recorded in `dist/`; the checksum and the artifact
+  were produced from the same commit.
 - Read tools exercised end to end against a real guild over both transports,
   including non-empty message text after enabling the intent, and the HTTP gate
   checked by hand (`401`, `401`, `403`, `403`, `200`, `202`, `400`).
@@ -175,8 +205,10 @@ channels, and only when writes are deliberately enabled.
   delete, react or bulk-delete, and it stays off unless deliberately enabled.
 - No TLS termination; a non-loopback bind belongs behind a proxy that terminates
   TLS, and `docs/SETUP.md` §7 documents the settings it must use.
-- No correlation IDs on tool executions, no graceful drain of the HTTP listener,
-  and no dependency-audit policy (Phase 8).
+- Native Windows Credential Manager lookup: the token comes from the
+  environment, and a launcher that reads the OS credential store is the supported
+  alternative (`SPEC.md` lists a `keyring`-backed store as optional).
 - Session resumption (event replay after a reconnect) is unverified; creation,
   acknowledgement, termination and disconnect recovery are covered.
-- No `docs/TOOLS.md`, no checksum, no clean-install test, no release tag.
+- No published artifact: the tag, the checksum and the clean-checkout build are
+  local to this repository, and the release gate (Phase 10) is unsigned.

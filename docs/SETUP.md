@@ -162,6 +162,47 @@ The two tokens are opposite directions of trust: the bot token is *outbound*
 (this server → Discord), the HTTP token is *inbound* (MCP client → this server).
 Never reuse one as the other, and never put the bot token in a client config.
 
+### Where the bot token can live
+
+The server reads the environment variable named by `discord.token_env`
+(`DISCORD_BOT_TOKEN` by default) and nothing else. Every option below is a way of
+putting the token into that variable for the server process, not a different code
+path inside the server.
+
+| Option | Use when | Trade-off |
+|---|---|---|
+| MCP client `env` block (§6) | A desktop client launches the server | The token sits in a client config file; keep that file out of version control and out of shared profiles |
+| Shell variable, set per session | Interactive testing | Re-entered each session; nothing persists |
+| `.env` plus the loader above | A repo-local workflow | Plaintext file, git-ignored but readable by anything running as your account |
+| `setx DISCORD_BOT_TOKEN "..."` | Every new process should see it | Written to your user environment in the registry; visible to anything running as you, and the value lands in shell history |
+| Windows Credential Manager plus a launcher | You keep secrets in the OS store | The server does not read it itself, so a launcher must load it into the variable |
+
+Reading it back from Windows Credential Manager in a launcher:
+
+```powershell
+# One-time. cmdkey prompts for the secret, so it never appears on the command
+# line or in PSReadLine history.
+cmdkey /generic:discord-mcp-bot /user:discord-bot /pass
+
+# Every launch: read it into this process and nothing else.
+$cred = Get-StoredCredential -Target discord-mcp-bot   # CredentialManager module
+$env:DISCORD_BOT_TOKEN = $cred.GetNetworkCredential().Password
+.\target\release\discord-mcp.exe serve
+```
+
+`Get-StoredCredential` comes from the third-party `CredentialManager` module
+(`Install-Module CredentialManager`), not from Windows itself. Without it, the
+same value can be read with a small `CredentialRead` P/Invoke or served by a
+wrapper that owns the credential.
+
+**Native Credential Manager lookup is not implemented.** `SPEC.md` lists a
+`keyring`-backed store as optional, and this build reads the environment only. If
+you want the token out of environment blocks entirely, the launcher above is the
+supported shape: the variable exists only in the server process and its children,
+and the stored credential is protected by your Windows account. To check it is
+wired up without starting the server, run `--validate-config` — it reports whether
+the variable is present and never prints its value.
+
 ---
 
 ## 5. Configuration
@@ -265,7 +306,8 @@ Resource: `discord://guilds` — the same guild listing as a resource, for clien
 that prefer resources over tools.
 
 Argument schemas reject unknown fields, and Discord snowflakes are decimal
-strings (`"1572365819281932408"`), never numbers.
+strings (`"1572365819281932408"`), never numbers. **Per-tool arguments, result
+shapes and error codes are in [`docs/TOOLS.md`](TOOLS.md).**
 
 ### Enabling writes
 
@@ -490,6 +532,16 @@ Run these in order; each one isolates a different layer.
 6. **HTTP gate** — with the server running: no token → `401`, wrong token →
    `401`, `Host: rebind.example` → `403`, `Origin: https://evil.example` → `403`,
    correct token → `200`.
+7. **Artifact integrity** — if you are checking a packaged build against
+   [`../dist/discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256`](../dist/discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256):
+
+   ```powershell
+   (Get-FileHash .\target\release\discord-mcp.exe -Algorithm SHA256).Hash.ToLower()
+   Get-Content dist\discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256
+   ```
+
+   The two hashes must match. That file is regenerated from a local release build
+   with the command above; the executable itself is not committed.
 
 A quick scripted STDIO smoke test (PowerShell), which prints the JSON-RPC
 responses and nothing else:
@@ -533,7 +585,8 @@ Exit codes: `0` success, `1` internal failure, `2` usage/configuration error,
 ## 10. Security checklist
 
 - The bot token lives in the environment or `.env` (git-ignored), never in a
-  config file, client config, screenshot or commit.
+  config file, client config, screenshot or commit. If you load it from Windows
+  Credential Manager through a launcher, it exists only in the server process.
 - The HTTP token is given to MCP clients; the bot token never is.
 - Keep `policy.write_enabled = false` unless you deliberately want
   `discord_send_message`. With it enabled, `policy.channel_allowlist` must be
@@ -556,3 +609,4 @@ Exit codes: `0` success, `1` internal failure, `2` usage/configuration error,
    bot role.
 3. Delete the application in the Developer Portal to retire the identity.
 4. Delete `.env` and any `config/local*.toml` from the working copy.
+5. Delete the stored credential if you used one: `cmdkey /delete:discord-mcp-bot`.

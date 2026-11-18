@@ -250,9 +250,12 @@ and disconnect recovery; event replay after a reconnect (resumption) is not.
       that shows the bits the bot actually holds.
 - [x] Document environment-variable options. `docs/SETUP.md` §4 and the README
       environment table cover both tokens, `DISCORD_MCP_CONFIG` and `RUST_LOG`.
-- [ ] Document Credential Manager options. *(not implemented: the bot token comes
-      from the environment variable named by `discord.token_env`, there is no
-      `keyring`-backed store, so there is nothing to document)*
+- [x] Document Credential Manager options. `docs/SETUP.md` §4 compares every
+      place the bot token can live — client `env` block, per-session variable,
+      `.env`, `setx`, and Windows Credential Manager read by a launcher — with
+      each option's trade-off and the removal step. Native `keyring` lookup is not
+      implemented (optional in `SPEC.md`) and the section says so instead of
+      implying it exists.
 - [x] Document STDIO configuration for Windows MCP clients. `docs/SETUP.md` §6
       gives the Claude Desktop `claude_desktop_config.json` form; launching from
       an installed desktop client is still unverified (see Phase 5).
@@ -262,20 +265,30 @@ and disconnect recovery; event replay after a reconnect (resumption) is not.
 - [x] Complete `docs/SECURITY.md`. Identity model, assets, adversaries,
       implemented controls, data handling, transport exposure and an explicit
       not-yet-implemented table.
-- [ ] Complete `docs/TOOLS.md`. *(not written: the tool table lives in
-      `docs/SETUP.md` §6 and the README, with no per-tool argument and response
-      reference of its own)*
+- [x] Complete `docs/TOOLS.md`. One section per tool with arguments, result
+      JSON, annotations, the policy preconditions that apply, error codes, retry
+      and timeout rules, the `discord://guilds` resource, and what the surface
+      deliberately does not do. Linked from the README and `docs/SETUP.md` §6.
 - [x] Complete `docs/DEPENDENCIES.md`. Pinned crate set with the reason for each
       choice, the rmcp and twilight facts verified from vendored source, and the
       v1 scopes, permissions, intents and endpoint list.
-- [ ] Add CHANGELOG. *(no `CHANGELOG.md` exists)*
+- [x] Add CHANGELOG. `CHANGELOG.md` groups changes by capability, states what is
+      and is not released, and now carries the `v0.1.0` packaging facts.
 - [x] Build release executable for Windows x64. `cargo build --release` produced
       `target\release\discord-mcp.exe` for `x86_64-pc-windows-msvc`.
-- [ ] Generate SHA-256 checksum. *(nothing produces or commits one)*
-- [ ] Test clean installation on a Windows machine. *(the binary is built in
-      place here; it has not been installed from a clean checkout following only
-      the guide)*
-- [ ] Tag first release. *(the repository has no tags)*
+- [x] Generate SHA-256 checksum.
+      `dist/discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256` records the hash of
+      the release build from the tagged commit, with the command that regenerates
+      it; `docs/SETUP.md` §8 verifies it. The executable is not committed.
+- [x] Test clean installation on a Windows machine. A fresh `git worktree` of
+      the tag was built with `cargo build --release --locked`, then
+      `--validate-config` and a STDIO `initialize`/`tools/call` handshake were run
+      from that tree, so the guide's §3 path needs no uncommitted file. Still one
+      machine: the Discord-portal steps and a desktop-client launch were not
+      repeated from scratch.
+- [x] Tag first release. Annotated tag `v0.1.0` on the release commit. It is a
+      local tag: the repository has no remote, so nothing was pushed or
+      published.
 
 **Exit criteria:** A new operator can configure a bot, install the server, connect an MCP client, and use the documented tools safely.
 
