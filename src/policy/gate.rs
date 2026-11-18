@@ -46,6 +46,12 @@ pub struct PolicyGate {
     /// A deque rather than a counter because the window rolls: an action a minute
     /// ago must stop counting without a background task to decrement anything.
     recent_actions: Arc<tokio::sync::Mutex<VecDeque<Instant>>>,
+    /// The bot's user ID, resolved once per gate.
+    ///
+    /// It cannot change for the life of the process, and the role guard needs it
+    /// on every edit, deletion and removal. The capability tool still reads the
+    /// live identity, because the username can change.
+    bot_user_id: tokio::sync::OnceCell<UserId>,
 }
 
 impl PolicyGate {
@@ -60,6 +66,7 @@ impl PolicyGate {
             permits,
             audit,
             recent_actions: Arc::new(tokio::sync::Mutex::new(VecDeque::new())),
+            bot_user_id: tokio::sync::OnceCell::new(),
         }
     }
 
@@ -128,6 +135,14 @@ impl PolicyGate {
     /// Waiting is deliberate: the cap limits how many Discord requests are in
     /// flight, and queueing is the behaviour that keeps a burst within it. It
     /// cannot fail open — a waiter only proceeds when a slot frees up.
+    /// The bot's user ID, fetched at most once per gate.
+    async fn bot_user_id(&self) -> Result<UserId, AppError> {
+        self.bot_user_id
+            .get_or_try_init(|| async { self.inner.bot_identity().await.map(|bot| bot.id) })
+            .await
+            .copied()
+    }
+
     async fn permit(&self) -> Result<OwnedSemaphorePermit, AppError> {
         Arc::clone(&self.permits)
             .acquire_owned()
@@ -986,13 +1001,13 @@ impl PolicyGate {
         user_id: Option<&UserId>,
     ) -> Result<(), AppError> {
         let _permit = self.permit().await?;
-        let bot = self.inner.bot_identity().await?;
+        let bot_id = self.bot_user_id().await?;
         if let Some(user_id) = user_id
-            && bot.id != *user_id
+            && bot_id != *user_id
         {
             return Ok(());
         }
-        if self.inner.highest_role_of(guild_id, &bot.id).await? == Some(*role_id) {
+        if self.inner.highest_role_of(guild_id, &bot_id).await? == Some(*role_id) {
             return Err(AppError::policy_blocked(format!(
                 "role {role_id} is the bot's own highest role in guild {guild_id}; changing or removing it would remove the bot's access"
             )));
