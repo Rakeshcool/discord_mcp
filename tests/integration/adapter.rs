@@ -87,11 +87,6 @@ fn role_with(id: &str, position: i64) -> String {
     )
 }
 
-fn bot_user() -> &'static str {
-    r#"{"id":"9999","username":"bot","discriminator":"0","bot":true,
-        "avatar":null,"global_name":null,"public_flags":0,"mfa_enabled":false}"#
-}
-
 fn bot_member() -> &'static str {
     r#"{"user":{"id":"9999","username":"bot","discriminator":"0","bot":true,
         "avatar":null,"global_name":null,"public_flags":0,"mfa_enabled":false},
@@ -1090,9 +1085,8 @@ async fn edit_role_patches_only_the_fields_given() {
 }
 
 #[tokio::test]
-async fn bot_highest_role_picks_the_top_role_the_bot_holds() {
+async fn highest_role_of_picks_the_top_role_the_member_holds() {
     let mock = MockDiscord::start(|request| match request.route() {
-        "/api/v10/users/@me" => MockResponse::json(bot_user()),
         "/api/v10/guilds/2002/members/9999" => MockResponse::json(bot_member()),
         "/api/v10/guilds/2002/roles" => MockResponse::json(format!(
             "[{},{},{}]",
@@ -1106,9 +1100,12 @@ async fn bot_highest_role_picks_the_top_role_the_bot_holds() {
     let api = adapter_for(&mock);
 
     let highest = api
-        .bot_highest_role(&GuildId::parse(GUILD_ID).expect("valid guild id"))
+        .highest_role_of(
+            &GuildId::parse(GUILD_ID).expect("valid guild id"),
+            &UserId::parse("9999").expect("valid user id"),
+        )
         .await
-        .expect("the bot's roles must load");
+        .expect("the member's roles must load");
 
     assert_eq!(
         highest,
