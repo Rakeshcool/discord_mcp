@@ -118,6 +118,16 @@ session, and no database — the process holds nothing beyond the current call.
   `http.allowed_origins`, and with the default empty list every `Origin`-bearing
   request is refused rather than ignored. Both checks are anti-rebinding and
   anti-CSRF; the bearer token remains the authentication.
+- **The listener caps concurrent requests.** `http.max_in_flight_requests`
+  bounds non-`GET` requests in flight; one beyond the cap is refused with `503`
+  and `Retry-After` rather than queued, because an unbounded queue is the memory
+  the cap exists to protect. The permit is attached to the response body, so a
+  streaming answer holds its slot until its last byte. `GET` (a session's
+  long-lived event stream) and `/health` are exempt: the first would let one
+  client starve the rest, the second must answer while the server is saturated.
+- **Health is a probe, not a surface.** `GET /health` sits behind the same
+  bearer gate and returns only status, server name, version and transport. It
+  makes no Discord call and holds no secret.
 - **Body size, request duration and session lifetime are bounded.**
   `http.max_request_bytes` caps a request body. `http.request_timeout_seconds`
   bounds each non-`GET` request from arrival to the last byte of its response
@@ -154,9 +164,10 @@ session, and no database — the process holds nothing beyond the current call.
   `http.require_auth = true` and explicit `http.allowed_origins` are configured.
   The bind guard is applied twice: configuration validation refuses the
   combination, and the transport re-checks before binding.
-- The endpoint is `POST /mcp` only. Authentication is a bearer token compared in
-  constant time; `Host` and `Origin` are validated as described in §4; the body is
-  capped by `http.max_request_bytes`. Process tests prove that requests without a
+- The MCP endpoint is `POST /mcp` (plus the `GET` event stream); `GET /health`
+  is the only other route. Every route is behind the same bearer gate.
+  Authentication is a token compared in constant time; `Host` and `Origin` are
+  validated as described in §4; the body is capped by `http.max_request_bytes`. Process tests prove that requests without a
   token, with a wrong token, with a foreign `Host` and with a foreign `Origin` are
   refused, and that a non-loopback bind missing its token exits with a
   configuration error before listening.
@@ -164,17 +175,17 @@ session, and no database — the process holds nothing beyond the current call.
   browser preflight is not what blocks a request.
 - **TLS is not implemented.** A non-loopback bind is expected to sit behind a
   reverse proxy that terminates TLS; the process serves plain HTTP on its bind
-  address and documents no trusted proxy headers. There is no HTTP-level
-  concurrency cap and no health endpoint; Discord calls are capped by
-  `policy.max_concurrent_requests`.
+  address. `docs/SETUP.md` §7 documents the proxy settings that work with this
+  server's `Host` validation, including the requirement to rewrite `Host` to the
+  bind address. `X-Forwarded-*` headers are ignored: there is no trusted-proxy
+  mode. In-flight requests are capped by `http.max_in_flight_requests` and
+  Discord calls by `policy.max_concurrent_requests`.
 
 ## 7. Not yet implemented (tracked, not claimed)
 
 | Control | Phase |
 |---|---|
 | Draft/review prompts | not scheduled (optional in the specification) |
-| TLS termination and reverse-proxy deployment guide | Phase 6 |
-| HTTP-level concurrency limit and health endpoint | Phase 6 |
 | `discord_send_message` with pre-flight policy and audit record | Phase 7 |
 | Correlation IDs on every tool execution | Phase 8 |
 | Packaging: SHA-256 checksum, clean-install test, first tag | Phase 9 |

@@ -19,6 +19,7 @@ auth_token_env = "DISCORD_MCP_HTTP_TOKEN"
 request_timeout_seconds = 30
 max_request_bytes = 1048576
 session_expiry_seconds = 3600
+max_in_flight_requests = 64               # non-GET requests; beyond the cap: 503
 allowed_origins = []                      # e.g. ["http://localhost:*"]
 
 [discord]

@@ -128,22 +128,25 @@ guild over both transports.
 - [x] Configure session expiry. `http.session_expiry_seconds` is the SDK session
       manager's idle timeout (`SessionConfig::keep_alive`), replacing its 5-minute
       default.
-- [ ] Configure HTTP-level concurrency. *(`policy.max_concurrent_requests` caps
-      Discord calls, which is where the expensive work is; the HTTP listener
-      itself has no connection or in-flight-request cap)*
-- [ ] Add health/readiness endpoint if compatible with deployment design.
-      *(not added: `/mcp` is the only route, and no deployment design asked for
-      one)*
+- [x] Configure HTTP-level concurrency. `http.max_in_flight_requests` (default
+      64) caps non-`GET` requests at the listener; one beyond the cap is refused
+      with `503` and `Retry-After` instead of being queued, and the permit rides
+      with the response body so a streaming answer holds its slot to the last
+      byte. `GET` and `/health` are exempt.
+- [x] Add health/readiness endpoint if compatible with deployment design.
+      `GET /health` answers status, server, version and transport behind the same
+      bearer gate, and never contacts Discord.
 - [x] Test initialization over HTTP, including the refused cases.
-- [ ] Test sessions, notifications, and disconnects over HTTP. *(initialize and
-      all four refused cases are covered by process tests, and a notification
-      accepted with `202` was observed against a live server; resumption,
-      notification delivery and disconnect cleanup are not asserted anywhere)*
-- [ ] Document TLS/reverse-proxy deployment. *(TLS is not implemented, and the
-      README, `docs/SETUP.md` §7/§10 and `docs/SECURITY.md` §6 each say so with a
-      one-line "put a TLS-terminating reverse proxy in front" instruction. No
-      proxy configuration, trusted-header behaviour or hostname guidance is
-      documented)*
+- [x] Test sessions, notifications, and disconnects over HTTP. Process tests
+      cover session creation and its announced id, a notification accepted with
+      `202`, a terminated session refused with `404`, an unknown session refused,
+      and an aborted `GET` event stream leaving the listener usable. Resumption
+      (event replay after a reconnect) is still unverified.
+- [x] Document TLS/reverse-proxy deployment. `docs/SETUP.md` §7 now has a
+      "Behind a reverse proxy (TLS)" section with nginx and Caddy configurations,
+      the mandatory `Host` rewrite, SSE buffering, the ignored `X-Forwarded-*`
+      headers and the proxied health check. TLS termination itself is still not
+      implemented in the server.
 - [x] Verify unauthenticated public binding is rejected.
 
 **Exit criteria:** Streamable HTTP passes protocol tests and unsafe exposure is blocked.
@@ -151,8 +154,8 @@ guild over both transports.
 Met for exposure: process tests prove that a request with no token, a wrong token,
 a foreign `Host` and a foreign `Origin` are all refused, that a valid token is
 served, and that a non-loopback bind without its bearer token exits `2` before it
-binds. Session lifecycle (resumption, notifications, disconnect cleanup) is not
-yet covered end to end.
+binds. Session lifecycle is covered for creation, acknowledgement, termination
+and disconnect recovery; event replay after a reconnect (resumption) is not.
 
 ## Phase 7 — Controlled write operations
 
@@ -256,7 +259,7 @@ yet covered end to end.
 
 These are signed off against the release artifact, not the working tree, so they
 stay open until Phases 7–9 land. Several already hold at the current commit and
-will be re-run then: 124 tests, `fmt`, Clippy, the release build, token-redaction
+will be re-run then: 132 tests, `fmt`, Clippy, the release build, token-redaction
 coverage, no self-bot path, no write tools, mass mentions rejected by validation.
 
 - [ ] All tests pass.

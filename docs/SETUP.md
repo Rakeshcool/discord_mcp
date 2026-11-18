@@ -190,6 +190,7 @@ Settings that matter most (see `config/default.toml` for every key):
 | `http.request_timeout_seconds` | `30` | Deadline per request, response body included |
 | `http.max_request_bytes` | `1048576` | Request body cap |
 | `http.session_expiry_seconds` | `3600` | Idle session timeout |
+| `http.max_in_flight_requests` | `64` | Non-`GET` requests handled at once; beyond the cap: `503` |
 | `http.allowed_origins` | `[]` | Empty means any request carrying `Origin` is refused |
 
 Validate without starting anything:
@@ -347,6 +348,7 @@ What the responses mean:
 | `400` | Missing/invalid `Mcp-Session-Id`, or a malformed body |
 | `401` + `WWW-Authenticate: Bearer` | No token, or a wrong one |
 | `403` | `Host` is not this server's bind, or `Origin` is not in `allowed_origins` |
+| `503` + `Retry-After: 1` | `http.max_in_flight_requests` non-`GET` requests are already running |
 | `504` | The request outlived `http.request_timeout_seconds` |
 
 Notes for operators:
@@ -359,12 +361,88 @@ Notes for operators:
   refused.
 - With `allowed_origins = []` (the default) any request carrying `Origin` is
   refused, so a browser page cannot drive the server. CORS is not authentication.
-- **TLS is not implemented.** For a non-loopback bind, put a reverse proxy in
-  front and keep the server on plain HTTP behind it.
+- **TLS is not implemented.** See [Behind a reverse proxy](#behind-a-reverse-proxy-tls)
+  below for the settings a proxy must use.
+- `GET /health` answers a small JSON status behind the same bearer token and
+  never contacts Discord, so it is safe to poll.
+- At most `http.max_in_flight_requests` non-`GET` requests are handled at once;
+  one beyond that gets `503` with `Retry-After` rather than waiting in a queue.
 - Idle sessions are closed after `http.session_expiry_seconds`; `GET /mcp` is the
   long-lived event stream and is exempt from the request deadline.
 - `transport = "both"` runs STDIO and HTTP in one process over the same policy
   and the same bot token.
+
+### Behind a reverse proxy (TLS)
+
+This server speaks plain HTTP and never terminates TLS. If a client has to reach
+it over a network, keep the server on a private interface and let a proxy
+terminate TLS in front of it. Nothing below is installed or managed by this
+project; it is the shape that works, verified against this server's `Host`
+validation.
+
+Two rules the proxy must follow:
+
+1. **Rewrite `Host` to the bind address.** `Host` is validated against the
+   configured bind (plus the loopback spellings when bound to `127.0.0.1`), so a
+   request arriving with the public name is refused `403`. The proxy has to send
+   `Host: 127.0.0.1:8787`.
+2. **Pass `Authorization` through unchanged**, and pass `Mcp-Session-Id` on every
+   request after `initialize`. The token is still the authentication; a proxy's
+   own auth is a second layer, not a replacement for `require_auth = true`.
+
+nginx:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name mcp.example.com;
+    ssl_certificate     /etc/ssl/certs/mcp.crt;
+    ssl_certificate_key /etc/ssl/private/mcp.key;
+
+    location / {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header Host 127.0.0.1:8787;   # must match http.host/http.port
+        proxy_buffering off;                    # the answer is SSE; buffering stalls it
+        proxy_read_timeout 3600s;               # at least http.session_expiry_seconds
+    }
+}
+```
+
+Caddy:
+
+```
+mcp.example.com {
+    reverse_proxy 127.0.0.1:8787 {
+        header_up Host 127.0.0.1:8787
+        flush_interval -1        # stream SSE instead of buffering it
+    }
+}
+```
+
+Caddy obtains and renews the certificate itself; `header_up` performs the `Host`
+rewrite and `flush_interval -1` disables response buffering.
+
+If the proxy runs on a different host, the server has to bind that host's
+address instead of loopback, which means `allow_non_loopback = true`,
+`require_auth = true` and a non-empty `allowed_origins` in `[http]`. `Host` in
+the proxy then has to be that address.
+
+What the server deliberately does **not** trust:
+
+- `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Real-IP` are ignored. There is no
+  trusted-proxy mode, client addresses are not logged, and the forwarded scheme
+  is never used to relax a check.
+- `Host` and `Origin` validation happen after the proxy, on what the proxy
+  actually sends, so a misconfigured rewrite surfaces as `403` rather than as a
+  silent bypass.
+- The bot token never goes in the proxy configuration; it belongs to the server
+  process.
+
+A proxy health check can use `GET /health` with the bearer token: it answers
+`200` with `{"status":"ok","server":"discord-mcp","version":"0.1.0","transport":"http"}`
+and is exempt from `http.max_in_flight_requests`, so it still answers when every
+request slot is busy.
 
 ---
 

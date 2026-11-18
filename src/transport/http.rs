@@ -14,26 +14,37 @@
 //!    by accident,
 //! 5. a request must finish within `http.request_timeout_seconds`, and an idle
 //!    session is closed after `http.session_expiry_seconds`,
-//! 6. the MCP service itself caps request bodies and validates media types.
+//! 6. at most `http.max_in_flight_requests` non-`GET` requests are handled at
+//!    once, and one beyond the cap is refused with `503` rather than queued,
+//! 7. the MCP service itself caps request bodies and validates media types.
 //!
 //! Nothing is authenticated by `Host` or `Origin` alone — they are anti-CSRF and
 //! anti-rebinding checks, and the bearer token is the authentication.
+//!
+//! `GET /health` answers a liveness probe behind the same bearer gate. `GET` and
+//! `/health` are exempt from the in-flight cap: the former is a session's
+//! long-lived event stream, the latter must answer while the server is saturated
+//! or it cannot report that the server is alive at all.
 
 use std::collections::BTreeSet;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::Router;
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
+use axum::routing::get;
 use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
 use rmcp::transport::streamable_http_server::StreamableHttpService;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use tokio::net::TcpListener;
-use tokio_stream::StreamExt as _;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio_stream::{Stream, StreamExt as _};
 
 use crate::app::state::AppState;
 use crate::config::schema::{HttpConfig, is_loopback_host};
@@ -43,6 +54,9 @@ use crate::security::secrets::HttpToken;
 
 /// Path the MCP endpoint is mounted on.
 pub const MCP_PATH: &str = "/mcp";
+
+/// Path the liveness probe answers on.
+pub const HEALTH_PATH: &str = "/health";
 
 /// Serve MCP over Streamable HTTP until the process stops.
 pub async fn serve(state: Arc<AppState>) -> Result<(), AppError> {
@@ -72,13 +86,36 @@ pub async fn serve(state: Arc<AppState>) -> Result<(), AppError> {
         service_config(&config),
     );
 
+    // Built once: a probe must never be the reason the process touches Discord.
+    let health_body = serde_json::json!({
+        "status": "ok",
+        "server": state.config().server.name,
+        "version": state.config().server.version,
+        "transport": "http",
+    })
+    .to_string();
+
     let router = Router::new()
+        .route(
+            HEALTH_PATH,
+            get({
+                let body = health_body;
+                move || {
+                    let body = body.clone();
+                    async move { ([(header::CONTENT_TYPE, "application/json")], body) }
+                }
+            }),
+        )
         .nest_service(MCP_PATH, mcp)
+        // Health is behind the same gate: this server has no unauthenticated
+        // surface, and a probe can send the token it already holds.
         .layer(middleware::from_fn_with_state(
-            AuthGate {
-                token: token.clone(),
-            },
+            AuthGate { token },
             require_bearer,
+        ))
+        .layer(middleware::from_fn_with_state(
+            Arc::new(Semaphore::new(config.max_in_flight_requests)),
+            limit_in_flight,
         ))
         // Outermost, so the deadline covers authentication and MCP handling too.
         .layer(middleware::from_fn_with_state(
@@ -101,10 +138,12 @@ pub async fn serve(state: Arc<AppState>) -> Result<(), AppError> {
     tracing::info!(
         address = %address,
         path = MCP_PATH,
+        health_path = HEALTH_PATH,
         authentication = config.require_auth,
         origins = config.allowed_origins.len(),
         request_timeout_seconds = config.request_timeout_seconds,
         session_expiry_seconds = config.session_expiry_seconds,
+        max_in_flight_requests = config.max_in_flight_requests,
         "MCP HTTP server listening"
     );
 
@@ -256,6 +295,83 @@ fn gateway_timeout() -> Response {
     (
         StatusCode::GATEWAY_TIMEOUT,
         "request timed out: http.request_timeout_seconds elapsed\n",
+    )
+        .into_response()
+}
+
+/// Refuse rather than queue once the listener is at its maximum.
+///
+/// Queueing would defeat the purpose of the cap: an unbounded backlog of waiting
+/// requests is exactly the memory the limit exists to protect. A saturated server
+/// answers `503` with `Retry-After`, so a client backs off instead of retrying in
+/// a tight loop.
+async fn limit_in_flight(
+    State(permits): State<Arc<Semaphore>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if is_unmetered(&request) {
+        return next.run(request).await;
+    }
+
+    let Ok(permit) = Arc::clone(&permits).try_acquire_owned() else {
+        tracing::debug!(
+            path = %request.uri().path(),
+            "refusing a request: http.max_in_flight_requests is saturated"
+        );
+        return too_many_requests();
+    };
+
+    let response = next.run(request).await;
+    let (parts, body) = response.into_parts();
+    Response::from_parts(parts, Body::from_stream(MeteredBody::new(body, permit)))
+}
+
+/// A response body that owns the in-flight permit for its request.
+///
+/// The permit has to outlive the body, not the handler: the MCP service answers a
+/// POST with an SSE response as soon as it starts streaming, so a reply that is
+/// still delivering bytes is still a request the listener is serving, and a
+/// handler-scoped permit would free the slot while the client is still reading.
+///
+/// Holding the permit in a field makes that lifetime structural. It is released
+/// when the body is dropped — read to the end, disconnected early, or cut off by
+/// `limit_request_time` — and no path drops it while the body can yield bytes.
+struct MeteredBody {
+    inner: axum::body::BodyDataStream,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl MeteredBody {
+    /// Wrap `body` so the permit lives exactly as long as the body does.
+    fn new(body: Body, permit: OwnedSemaphorePermit) -> Self {
+        Self {
+            inner: body.into_data_stream(),
+            _permit: permit,
+        }
+    }
+}
+
+impl Stream for MeteredBody {
+    type Item = Result<Bytes, axum::Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.inner).poll_next(cx)
+    }
+}
+
+/// Requests that do not consume an in-flight slot.
+fn is_unmetered(request: &Request) -> bool {
+    request.method() == Method::GET || request.uri().path() == HEALTH_PATH
+}
+
+fn too_many_requests() -> Response {
+    let mut headers = HeaderMap::new();
+    headers.insert(header::RETRY_AFTER, header::HeaderValue::from_static("1"));
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        headers,
+        "server busy: http.max_in_flight_requests is saturated\n",
     )
         .into_response()
 }
@@ -437,5 +553,156 @@ mod tests {
         }
 
         assert_eq!(bearer(&HeaderMap::new()), None);
+    }
+
+    async fn stall() -> &'static str {
+        std::future::pending::<()>().await;
+        "the request never finishes"
+    }
+
+    async fn ok() -> &'static str {
+        "ok"
+    }
+
+    /// A response whose body keeps producing bytes after the handler returns.
+    async fn streaming() -> Response {
+        let chunks = tokio_stream::iter([(0u64, "first"), (200, "second")]).then(
+            |(delay, text)| async move {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+                Ok::<_, std::io::Error>(Bytes::copy_from_slice(text.as_bytes()))
+            },
+        );
+        Body::from_stream(chunks).into_response()
+    }
+
+    fn capped(max: usize) -> Router {
+        Router::new()
+            .route("/ok", axum::routing::post(ok))
+            .route("/slow", axum::routing::post(stall))
+            .route("/stream", axum::routing::post(streaming))
+            .route("/events", get(ok))
+            .route(HEALTH_PATH, get(ok))
+            .layer(middleware::from_fn_with_state(
+                Arc::new(Semaphore::new(max)),
+                limit_in_flight,
+            ))
+    }
+
+    fn empty_request(method: Method, uri: &str) -> Request {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .body(Body::empty())
+            .expect("a request")
+    }
+
+    #[tokio::test]
+    async fn a_request_beyond_the_in_flight_cap_is_refused_with_retry_after() {
+        use tower::ServiceExt as _;
+
+        let app = capped(1);
+        let occupied = tokio::spawn({
+            let app = app.clone();
+            async move { app.oneshot(empty_request(Method::POST, "/slow")).await }
+        });
+        // Let the first request take the only slot.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let refused = app
+            .clone()
+            .oneshot(empty_request(Method::POST, "/ok"))
+            .await
+            .expect("the router answers");
+
+        assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            refused
+                .headers()
+                .get(header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok()),
+            Some("1"),
+            "a refused client must be told to back off"
+        );
+
+        occupied.abort();
+    }
+
+    #[tokio::test]
+    async fn a_saturated_server_still_answers_health_and_event_streams() {
+        use tower::ServiceExt as _;
+
+        let app = capped(1);
+        let occupied = tokio::spawn({
+            let app = app.clone();
+            async move { app.oneshot(empty_request(Method::POST, "/slow")).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let health = app
+            .clone()
+            .oneshot(empty_request(Method::GET, HEALTH_PATH))
+            .await
+            .expect("the router answers");
+        assert_eq!(
+            health.status(),
+            StatusCode::OK,
+            "a saturated server must still be able to report that it is alive"
+        );
+
+        let stream = app
+            .clone()
+            .oneshot(empty_request(Method::GET, "/events"))
+            .await
+            .expect("the router answers");
+        assert_eq!(
+            stream.status(),
+            StatusCode::OK,
+            "the long-lived event stream is not a metered request"
+        );
+
+        occupied.abort();
+    }
+
+    #[tokio::test]
+    async fn a_streaming_response_holds_its_slot_until_its_body_ends() {
+        use tower::ServiceExt as _;
+
+        let app = capped(1);
+        let streamed = app
+            .clone()
+            .oneshot(empty_request(Method::POST, "/stream"))
+            .await
+            .expect("the router answers");
+        assert_eq!(streamed.status(), StatusCode::OK);
+
+        // The handler has already returned and the status line is sent, but the
+        // body is still producing bytes, so the slot must still be taken.
+        let refused = app
+            .clone()
+            .oneshot(empty_request(Method::POST, "/ok"))
+            .await
+            .expect("the router answers");
+        assert_eq!(
+            refused.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "a response that is still streaming is still an in-flight request"
+        );
+
+        // Draining the body is what ends the response and drops the permit.
+        let body = axum::body::to_bytes(streamed.into_body(), 1024)
+            .await
+            .expect("a complete body");
+        assert_eq!(body.as_ref(), b"firstsecond");
+
+        let after = app
+            .clone()
+            .oneshot(empty_request(Method::POST, "/ok"))
+            .await
+            .expect("the router answers");
+        assert_eq!(
+            after.status(),
+            StatusCode::OK,
+            "the slot must be free once the body has ended"
+        );
     }
 }
