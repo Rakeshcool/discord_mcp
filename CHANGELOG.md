@@ -39,7 +39,9 @@ Notable changes to `discord-mcp`, grouped by capability rather than by commit â€
   own highest role, or removing it from the bot's own membership, is refused
   unconditionally, so the guard cannot be configured away; the check needs the
   bot's membership and the guild's role list, so it runs on a real call and not on
-  a dry run.
+  a dry run. The docs now spell out the Discord side: role tools need Manage
+  Roles, can only touch roles below the bot's highest role, and report a missing
+  permission or hierarchy refusal as `PERMISSION_DENIED` (`403`, code `50013`).
 
 ## v0.1.0 â€” 2026-11-18
 

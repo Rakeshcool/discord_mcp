@@ -341,9 +341,38 @@ channel; only a refusal before resolution is recorded without a target.
 Roles are guild-wide configuration, so every tool here needs
 `policy.administrative_enabled = true`, its guild on `policy.guild_allowlist`, and
 an action from the shared budget; each accepts `dry_run`. Permission names resolve
-to Discord bits, and `ADMINISTRATOR` cannot be granted. Discord still enforces
-role hierarchy and refuses managed roles; a refusal surfaces as
-`PERMISSION_DENIED`.
+to Discord bits, and `ADMINISTRATOR` cannot be granted.
+
+### Discord permissions and role hierarchy
+
+Local policy is only half the gate: the bot must also hold **Manage Roles** in the
+guild. The policy flag lets a tool run; Discord still refuses the request when
+the permission is missing or the role is out of reach. That refusal surfaces as
+`PERMISSION_DENIED` with Discord's `403` and error code `50013`
+(*Missing Permissions*).
+
+| Tool | Discord permission | Hierarchy requirement |
+|---|---|---|
+| `discord_create_role` | Manage Roles | None for creation; the role is created at the bottom |
+| `discord_edit_role` | Manage Roles | Role must sit below the bot's highest role |
+| `discord_delete_role` | Manage Roles | Role must sit below the bot's highest role |
+| `discord_assign_role` | Manage Roles | Role must sit below the bot's highest role |
+| `discord_remove_role` | Manage Roles | Role must sit below the bot's highest role |
+
+Position decides as much as permission: a role at or above the bot's highest
+role cannot be edited, deleted, assigned or removed, even with Manage Roles and
+even with `Administrator`. For `discord_assign_role` and `discord_remove_role`
+the rule is about the role, not the target member: a role below the bot's highest
+role can be given to or taken from a member, including the server owner. When
+creating or editing a role, the bot can only grant permissions the bot itself
+holds.
+
+`@everyone` is position 0: it can be edited, but cannot be deleted, assigned or
+removed. Discord also refuses deleting a managed role or changing its permission
+set.
+
+A `dry_run` does not contact Discord, so it cannot detect a missing permission or
+a hierarchy problem; the first real call is where the `403` appears.
 
 The bot's **own highest role** is protected unconditionally: editing or deleting
 it would strip the bot's access, and removing it from the bot's own membership
