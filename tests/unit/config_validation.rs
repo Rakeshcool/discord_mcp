@@ -54,6 +54,12 @@ fn embedded_defaults_are_valid_and_safe() {
     assert!(!config.policy.allow_mass_mentions);
     assert_eq!(config.policy.max_messages_per_read, 100);
     assert_eq!(config.policy.max_message_characters, 2_000);
+    assert_eq!(config.policy.max_embeds_per_message, 10);
+    assert_eq!(config.policy.max_embed_characters, 6_000);
+    assert_eq!(config.policy.max_attachments_per_message, 10);
+    assert_eq!(config.policy.max_attachment_bytes, 8_388_608);
+    assert_eq!(config.policy.max_attachment_total_bytes, 16_777_216);
+    assert!(config.policy.attachment_root.is_none());
     assert!(config.logging.redact_message_content);
     assert!(!config.logging.log_tool_arguments);
 }
@@ -235,6 +241,27 @@ fn read_and_write_limits_are_bounded() {
         no_concurrency.contains("policy.max_concurrent_requests"),
         "unexpected message: {no_concurrency}"
     );
+
+    for (field, value) in [
+        ("max_embeds_per_message", "11"),
+        ("max_embed_characters", "6001"),
+        ("max_attachments_per_message", "11"),
+        ("max_attachment_bytes", "0"),
+        ("max_attachment_total_bytes", "0"),
+    ] {
+        let message = rejection(&format!("[policy]\n{field} = {value}\n"));
+        assert!(
+            message.contains(&format!("policy.{field}")),
+            "unexpected message: {message}"
+        );
+    }
+
+    let empty_root = rejection("[policy]\nattachment_root = \"  \"\n");
+    assert!(
+        empty_root.contains("policy.attachment_root"),
+        "unexpected message: {empty_root}"
+    );
+    accepted("[policy]\nattachment_root = \"uploads\"\n");
 }
 
 #[test]
@@ -299,6 +326,26 @@ administrative_enabled = true
     accepted(
         "[policy]
 administrative_enabled = true
+guild_allowlist = [\"123456789012345678\"]
+",
+    );
+}
+
+#[test]
+fn moderation_requires_a_guild_allowlist() {
+    let message = rejection(
+        "[policy]
+moderation_enabled = true
+",
+    );
+    assert!(
+        message.contains("policy.guild_allowlist"),
+        "unexpected message: {message}"
+    );
+
+    accepted(
+        "[policy]
+moderation_enabled = true
 guild_allowlist = [\"123456789012345678\"]
 ",
     );
@@ -412,6 +459,7 @@ fn mutation_classes_are_off_by_default() {
     let config = load(None).expect("the built-in defaults must load");
 
     assert!(!config.policy.control_enabled);
+    assert!(!config.policy.moderation_enabled);
     assert!(!config.policy.administrative_enabled);
     assert_eq!(config.policy.autonomy.max_actions_per_minute, 30);
     assert_eq!(config.policy.autonomy.max_sends_per_channel_per_minute, 5);

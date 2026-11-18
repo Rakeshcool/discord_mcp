@@ -46,8 +46,9 @@ raises a budget.
    `docs/SETUP.md` §2.4). Pin/unpin needs `PIN_MESSAGES` on current Discord;
    Manage Messages alone is no longer sufficient.
 4. A configuration file sets the classes and allowlists. Built-in defaults are
-   read-only: `write_enabled`, `control_enabled` and `administrative_enabled`
-   are all `false`, and enabling one requires a non-empty allowlist.
+   read-only: `write_enabled`, `control_enabled`, `moderation_enabled` and
+   `administrative_enabled` are all `false`, and enabling one requires a
+   non-empty allowlist.
 5. The host is configured to launch the binary, for example:
 
 ```json
@@ -120,7 +121,7 @@ of the read-only built-in defaults.
 curl -s -X POST http://127.0.0.1:7800/api/servers/discord-mcp/connect
 ```
 
-A healthy answer reports `"status":"connected"` and `"toolCount":33` (the
+A healthy answer reports `"status":"connected"` and `"toolCount":39` (the
 number this build exposes). Connecting is what performs the MCP handshake; the
 entry alone does nothing until then.
 
@@ -180,7 +181,7 @@ HTTP transport, and any live mutation.
 The server answers with its protocol version, `serverInfo` and `instructions`.
 The host then sends `notifications/initialized` and `tools/list`.
 
-`tools/list` returns **33 tools**. Read them before planning anything: the input
+`tools/list` returns **39 tools**. Read them before planning anything: the input
 schemas are strict, IDs are decimal strings, and unknown fields are rejected.
 
 The server instructions state the rule you must follow for the whole session:
@@ -199,7 +200,7 @@ Example result under the default configuration:
 ```json
 {"server":"discord-mcp","version":"0.1.0",
  "bot":{"id":"1572386219596316742","username":"mcp-test-bot"},
- "enabled":{"read":true,"write":false,"control":false,"administrative":false},
+ "enabled":{"read":true,"write":false,"control":false,"moderation":false,"administrative":false},
  "limits":{"max_actions_per_minute":30,"max_sends_per_channel_per_minute":5,"max_bulk_delete":50,"require_dry_run":[]}}
 ```
 
@@ -232,7 +233,13 @@ Rules:
 - A page size above `policy.max_messages_per_read` is `INVALID_ARGUMENT`, not a
   silent truncation.
 - `content: null` means the Message Content intent is off, or the message is not
-  readable — not that the tool is broken.
+  readable — not that the tool is broken. The same intent can blank `embeds` and
+  `attachments`. Each message also carries bounded `embeds`, `reactions` and
+  `attachments` summaries; long rich text is capped with an ellipsis.
+- `discord_send_message` takes optional `content`, `embeds`, `files` and
+  `reply_to`. At least one of content, an embed or a file is required. Files are
+  refused unless the operator set `policy.attachment_root`, and paths must stay
+  beneath it.
 - `discord_list_guilds` filters to allowlisted guilds but still returns a
   cursor; a short page does not necessarily mean the end.
 - To find one user's recent messages across a guild, call
@@ -279,6 +286,7 @@ configuration and restart the server.
 |---|---|---|
 | `write_enabled` | send, edit, add/remove/clear reactions, pin, unpin | channel allowlist |
 | `control_enabled` | delete message, create/edit/delete channel, set/delete permission overwrite, create/edit thread, create/delete invite | channel allowlist; created channel's parent must be allowed; a thread is resolved through its parent; an invite through its channel |
+| `moderation_enabled` | nickname, kick, ban, unban, timeout, clear timeout | guild allowlist; the target is never the bot; Discord permissions and hierarchy still apply |
 | `administrative_enabled` | bulk delete, create/edit/delete/assign/remove role | guild allowlist; roles also need Manage Roles and a role below the bot's highest |
 
 `policy.protected_channels` and `policy.protected_roles` override the allowlists:
@@ -300,13 +308,18 @@ tool or ID.
 - Tools in `limits.require_dry_run` refuse a real call until planned.
 - Bulk delete accepts 2–`limits.max_bulk_delete` distinct IDs, none older than
   14 days. Discord's own limits still apply.
+- Member moderation is the `moderation_enabled` class and needs a guild
+  allowlist. Nicknames are 1–32 characters (empty clears one), reasons are at
+  most 512 characters, ban message deletion is 0–604800 seconds and timeouts are
+  1–2419200 seconds. The bot cannot target itself.
 - No mutation is retried after an ambiguous outcome. Never re-issue a mutation
   after `TIMEOUT` or `NETWORK_ERROR` without checking state first.
 - `@everyone` can be edited but never deleted, assigned or removed.
 - `ADMINISTRATOR` cannot be granted through a role or an overwrite.
 - Editing a role's `permissions` **replaces** the whole set, not merges.
-- The bot's own highest role cannot be edited, deleted, or removed from the bot.
-  There is no setting that disables this.
+- The bot's own highest role cannot be edited, deleted, or removed from the bot,
+  and member moderation cannot target the bot. There is no setting that disables
+  these guards.
 
 ---
 
@@ -362,7 +375,11 @@ call's correlation id. You will not see those records.
    hoping one lands.
 8. **Mention neutralisation applies.** Outgoing `@everyone`, `@here`, user and
    role mentions are broken with a zero-width space, and the request carries an
-   empty mention parse list. Do not promise that a ping was delivered.
+   empty mention parse list. A reply does not ping its target. Do not promise
+   that a ping was delivered.
+9. **Uploads are operator-scoped.** Pass only relative file paths beneath
+   `policy.attachment_root`. Do not attempt absolute paths or `..`; a refusal is
+   final, not something to work around.
 
 ---
 

@@ -44,7 +44,7 @@ Configurations used, all under `target/` (build output, not committed):
 | Config | Purpose |
 |---|---|
 | built-in defaults | read-only baseline |
-| `live-test.toml` | all three mutation classes enabled, guild + `#general` allowlisted, budget 300 |
+| `live-test.toml` | all four mutation classes enabled, guild + `#general` allowlisted, budget 300 |
 | `live-budget.toml` | same, `max_actions_per_minute = 2` |
 | `live-dryrun.toml` | same, `require_dry_run = ["discord_pin_message"]` |
 | `live-http.toml` | `transport = "http"`, `127.0.0.1:8788`, bearer auth |

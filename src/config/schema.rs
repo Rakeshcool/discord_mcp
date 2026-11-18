@@ -173,13 +173,28 @@ pub struct PolicyConfig {
     pub max_messages_per_read: u16,
     /// Upper bound for an outgoing message body.
     pub max_message_characters: u16,
+    /// Upper bound for the number of embeds on one send.
+    pub max_embeds_per_message: u16,
+    /// Upper bound for characters across every embed on one send.
+    pub max_embed_characters: u16,
+    /// Upper bound for uploaded files on one send.
+    pub max_attachments_per_message: u16,
+    /// Upper bound for one uploaded file, in bytes.
+    pub max_attachment_bytes: u64,
+    /// Upper bound for all uploaded files on one send, in bytes.
+    pub max_attachment_total_bytes: u64,
+    /// Directory that file uploads must stay beneath. No directory means file
+    /// uploads are disabled.
+    pub attachment_root: Option<String>,
     /// Whether parsed `@everyone`/`@here`, role and user mentions are allowed.
     pub allow_mass_mentions: bool,
     /// Upper bound for concurrent Discord requests.
     pub max_concurrent_requests: u16,
-    /// Enable channel, role and invite control tools.
+    /// Enable channel, thread and invite control tools.
     pub control_enabled: bool,
-    /// Enable guild-administration tools (settings, automod, bulk delete).
+    /// Enable member nickname, kick, ban, unban and timeout tools.
+    pub moderation_enabled: bool,
+    /// Enable bulk delete and role tools.
     pub administrative_enabled: bool,
     /// Limits that apply when a tool mutates the server.
     pub autonomy: AutonomyConfig,
@@ -196,9 +211,16 @@ impl Default for PolicyConfig {
             protected_roles: Vec::new(),
             max_messages_per_read: 100,
             max_message_characters: 2_000,
+            max_embeds_per_message: 10,
+            max_embed_characters: 6_000,
+            max_attachments_per_message: 10,
+            max_attachment_bytes: 8_388_608,
+            max_attachment_total_bytes: 16_777_216,
+            attachment_root: None,
             allow_mass_mentions: false,
             max_concurrent_requests: 8,
             control_enabled: false,
+            moderation_enabled: false,
             administrative_enabled: false,
             autonomy: AutonomyConfig::default(),
         }
@@ -463,6 +485,12 @@ impl PolicyConfig {
                 "must list at least one channel ID when policy.control_enabled is true",
             ));
         }
+        if self.moderation_enabled && self.guild_allowlist.is_empty() {
+            return Err(ConfigError::invalid(
+                "policy.guild_allowlist",
+                "must list at least one guild ID when policy.moderation_enabled is true",
+            ));
+        }
         if self.administrative_enabled && self.guild_allowlist.is_empty() {
             return Err(ConfigError::invalid(
                 "policy.guild_allowlist",
@@ -527,6 +555,44 @@ impl PolicyConfig {
             return Err(ConfigError::invalid(
                 "policy.max_message_characters",
                 "must be between 1 and 2000",
+            ));
+        }
+        if !(0..=10).contains(&self.max_embeds_per_message) {
+            return Err(ConfigError::invalid(
+                "policy.max_embeds_per_message",
+                "must be between 0 and 10, which is Discord's embed count ceiling",
+            ));
+        }
+        if !(0..=6_000).contains(&self.max_embed_characters) {
+            return Err(ConfigError::invalid(
+                "policy.max_embed_characters",
+                "must be between 0 and 6000, which is Discord's total embed character ceiling",
+            ));
+        }
+        if !(0..=10).contains(&self.max_attachments_per_message) {
+            return Err(ConfigError::invalid(
+                "policy.max_attachments_per_message",
+                "must be between 0 and 10, which is Discord's attachment count ceiling",
+            ));
+        }
+        if !(1..=25_165_824).contains(&self.max_attachment_bytes) {
+            return Err(ConfigError::invalid(
+                "policy.max_attachment_bytes",
+                "must be between 1 and 25165824 (25 MiB)",
+            ));
+        }
+        if !(1..=104_857_600).contains(&self.max_attachment_total_bytes) {
+            return Err(ConfigError::invalid(
+                "policy.max_attachment_total_bytes",
+                "must be between 1 and 104857600 (100 MiB)",
+            ));
+        }
+        if let Some(root) = &self.attachment_root
+            && root.trim().is_empty()
+        {
+            return Err(ConfigError::invalid(
+                "policy.attachment_root",
+                "must not be empty; omit it to disable file uploads",
             ));
         }
         if !(1..=64).contains(&self.max_concurrent_requests) {

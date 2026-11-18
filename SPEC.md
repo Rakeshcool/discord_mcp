@@ -1,7 +1,7 @@
 # Discord MCP Server — Production Specification
 
 **Status:** Implementation specification — reflects `feat/user-message-search`
-(33 tools, 23 mutations in three policy classes)
+(39 tools, 29 mutations in four policy classes)
 
 **Target:** Windows 11 x64  
 **Language:** Rust  
@@ -157,7 +157,7 @@ The v1 feature set is intentionally narrow and permission-aware.
 | `discord_get_guild` | Get guild metadata | Validate guild ID |
 | `discord_list_channels` | List guild channels | Respect bot visibility and permissions |
 | `discord_get_channel` | Get channel metadata | Validate channel access |
-| `discord_get_messages` | Read recent messages from a channel | Bounded page size; only accessible channels |
+| `discord_get_messages` | Read recent messages from a channel | Bounded page size; bounded embeds, reactions and attachment metadata; only accessible channels |
 | `discord_get_user_messages` | Collect recent messages by one author across visible text channels | Bounded per-channel scan, 50-request global cap; policy-filtered; no Discord search endpoint |
 | `discord_get_message` | Fetch one message by channel and message ID | Verify channel access |
 | `discord_list_members` | List members where supported | Require necessary intent/API permissions; bounded pagination |
@@ -171,14 +171,14 @@ allowlisted, and every call supports `dry_run` except `discord_send_message`.
 
 | Tools | Class flag | Scope |
 |---|---|---|
-| `discord_send_message`, `discord_edit_message`, `discord_add_reaction`, `discord_remove_reaction`, `discord_clear_reactions`, `discord_pin_message`, `discord_unpin_message` | `write_enabled` | channel allowlist |
+| `discord_send_message`, `discord_edit_message`, `discord_add_reaction`, `discord_remove_reaction`, `discord_clear_reactions`, `discord_pin_message`, `discord_unpin_message` | `write_enabled` | channel allowlist; sends take text, embeds, files beneath `policy.attachment_root` and a reply target, all locally bounded |
 | `discord_delete_message`, `discord_create_channel`, `discord_edit_channel`, `discord_delete_channel`, `discord_set_permission_overwrite`, `discord_delete_permission_overwrite`, `discord_create_thread`, `discord_edit_thread`, `discord_create_invite`, `discord_delete_invite` | `control_enabled` | channel allowlist; a created channel's parent must be allowed, a thread is resolved through its parent, an invite through its channel |
+| `discord_set_member_nickname`, `discord_kick_member`, `discord_ban_member`, `discord_unban_member`, `discord_timeout_member`, `discord_clear_member_timeout` | `moderation_enabled` | guild allowlist; nicknames are 1–32 characters, reasons at most 512 characters, bans delete at most 7 days of messages and timeouts last at most 28 days; the bot cannot target itself |
 | `discord_bulk_delete_messages`, `discord_create_role`, `discord_edit_role`, `discord_delete_role`, `discord_assign_role`, `discord_remove_role` | `administrative_enabled` | guild allowlist; bulk delete takes 2–`policy.autonomy.max_bulk_delete` distinct IDs younger than 14 days; role tools also need Manage Roles and a role below the bot's highest |
 
-Not exposed: bans, kicks, member or nickname management, webhooks, emoji
-management, guild settings, automod, and channel position changes. Mass mentions
-remain impossible: `allow_mass_mentions = true` is rejected by validation and
-outgoing content is neutralised.
+Not exposed: webhooks, emoji management, guild settings, automod, and channel
+position changes. Mass mentions remain impossible: `allow_mass_mentions = true`
+is rejected by validation and outgoing content is neutralised.
 
 ### 6.3 Mutation controls
 
@@ -196,6 +196,18 @@ outgoing content is neutralised.
   owns the file through an exclusive lock and a second instance with mutations
   enabled fails startup; concurrent instances need distinct state files, which
   are independent limits.
+- **Member moderation limits.** Nicknames are 1–32 characters, an empty string
+  clears one; audit-log reasons are at most 512 characters and reject newlines
+  and NUL; a ban's `delete_message_seconds` is 0–604800; a timeout is
+  1–2419200 seconds. The bot refuses to moderate itself.
+- **Rich send limits.** `policy.max_message_characters` bounds text;
+  `policy.max_embeds_per_message` and `policy.max_embed_characters` bound embed
+  count and total text; Discord's per-field limits are checked locally.
+  `policy.max_attachments_per_message`, `policy.max_attachment_bytes` and
+  `policy.max_attachment_total_bytes` bound uploads. Files are disabled unless
+  `policy.attachment_root` is set, and every path is canonicalised beneath that
+  root before the budget is spent. Reply targets are message IDs in the same
+  channel.
 - **Required dry runs.** `policy.autonomy.require_dry_run` lists tools that refuse
   a real call; a name that is not a classified tool is a configuration error.
 - **Audit.** Each real attempt produces exactly one content-free record
@@ -207,7 +219,7 @@ outgoing content is neutralised.
 - **No ambiguous retries.** A mutation is attempted once. A `429` is safe to
   resend because Discord rejected that attempt; a timeout, reset or `5xx` is not.
 - **Session kill switch.** `--read-only` or `DISCORD_MCP_READ_ONLY=1` turns all
-  three mutation classes off without editing the configuration.
+  four mutation classes off without editing the configuration.
 
 ### 6.4 Tool schema rules
 
@@ -302,6 +314,7 @@ max_retries = 3
 read_enabled = true
 write_enabled = false
 control_enabled = false
+moderation_enabled = false
 administrative_enabled = false
 guild_allowlist = []
 channel_allowlist = []
@@ -309,6 +322,12 @@ protected_channels = []
 protected_roles = []
 max_messages_per_read = 100
 max_message_characters = 2000
+max_embeds_per_message = 10
+max_embed_characters = 6000
+max_attachments_per_message = 10
+max_attachment_bytes = 8388608
+max_attachment_total_bytes = 16777216
+# attachment_root = "C:\\path\\to\\uploads"  # unset disables file uploads
 allow_mass_mentions = false
 max_concurrent_requests = 8
 

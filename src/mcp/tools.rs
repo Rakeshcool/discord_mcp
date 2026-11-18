@@ -21,6 +21,7 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::future::Future;
+use std::path::PathBuf;
 
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::Parameters;
@@ -32,8 +33,9 @@ use serde::{Deserialize, Serialize};
 use crate::discord::client::{GUILDS_PAGE_MAX, MESSAGES_PAGE_MAX};
 use crate::discord::ids::{ChannelId, GuildId, MessageId, RoleId, UserId};
 use crate::discord::models::{
-    ChannelEdit, ChannelKind, ChannelSummary, MessageQuery, MessageSummary, NewChannel, NewInvite,
-    NewRole, NewThread, OverwriteTarget, Page, RoleEdit,
+    ChannelEdit, ChannelKind, ChannelSummary, MessageDraft, MessageQuery, MessageSummary,
+    NewChannel, NewEmbed, NewEmbedField, NewInvite, NewRole, NewThread, OverwriteTarget, Page,
+    RoleEdit,
 };
 use crate::error::AppError;
 use crate::mcp::server::DiscordMcpServer;
@@ -149,6 +151,64 @@ pub struct GetMemberArgs {
     pub user_id: String,
 }
 
+/// One field in an outgoing embed.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EmbedFieldArgs {
+    /// Field label, 1-256 characters.
+    pub name: String,
+    /// Field body, 1-1024 characters.
+    pub value: String,
+    /// Whether Discord may lay this field out beside another.
+    pub inline: Option<bool>,
+}
+
+/// One rich embed to send.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EmbedArgs {
+    /// Embed title, up to 256 characters.
+    pub title: Option<String>,
+    /// Embed description, up to 4096 characters.
+    pub description: Option<String>,
+    /// Title link. Must be http(s).
+    pub url: Option<String>,
+    /// RGB colour, `0x000000`-`0xFFFFFF`.
+    pub color: Option<u32>,
+    /// Up to 25 fields.
+    #[serde(default)]
+    pub fields: Vec<EmbedFieldArgs>,
+    /// Footer text, up to 2048 characters.
+    pub footer: Option<String>,
+    /// Large image URL; http(s) or `attachment://filename`.
+    pub image_url: Option<String>,
+    /// Thumbnail URL; http(s) or `attachment://filename`.
+    pub thumbnail_url: Option<String>,
+}
+
+impl From<EmbedArgs> for NewEmbed {
+    fn from(args: EmbedArgs) -> Self {
+        Self {
+            title: args.title,
+            description: args.description,
+            url: args.url,
+            color: args.color,
+            fields: args
+                .fields
+                .into_iter()
+                .map(|field| NewEmbedField {
+                    name: field.name,
+                    value: field.value,
+                    inline: field.inline.unwrap_or(false),
+                })
+                .collect(),
+            footer: args.footer,
+            image_url: args.image_url,
+            thumbnail_url: args.thumbnail_url,
+        }
+    }
+}
+
 /// Arguments for `discord_send_message`.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -156,8 +216,18 @@ pub struct SendMessageArgs {
     /// Discord channel ID, digits only. Must be on `policy.channel_allowlist`.
     pub channel_id: String,
     /// Message body. Mentions are neutralised and `policy.max_message_characters`
-    /// applies.
-    pub content: String,
+    /// applies. Optional when an embed or file carries the message.
+    pub content: Option<String>,
+    /// Rich embeds. Bounded by `policy.max_embeds_per_message` and
+    /// `policy.max_embed_characters`.
+    #[serde(default)]
+    pub embeds: Vec<EmbedArgs>,
+    /// Files to upload, relative to `policy.attachment_root`. File uploads are
+    /// disabled when that setting is unset.
+    #[serde(default)]
+    pub files: Vec<String>,
+    /// Message ID to reply to, in the same channel.
+    pub reply_to: Option<String>,
 }
 
 /// Arguments for `discord_get_capabilities`.
@@ -449,6 +519,82 @@ pub struct MemberRoleArgs {
     pub dry_run: Option<bool>,
 }
 
+/// Arguments for `discord_set_member_nickname`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemberNicknameArgs {
+    /// Discord guild (server) ID, digits only.
+    pub guild_id: String,
+    /// Discord user ID, digits only.
+    pub user_id: String,
+    /// Nickname, 1-32 characters. Pass an empty string to clear it.
+    pub nickname: String,
+    /// Optional reason recorded in Discord's audit log, up to 512 characters.
+    pub reason: Option<String>,
+    /// Validate and report without changing the nickname. Off by default.
+    pub dry_run: Option<bool>,
+}
+
+/// Arguments for `discord_kick_member` and `discord_unban_member`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemberModerationArgs {
+    /// Discord guild (server) ID, digits only.
+    pub guild_id: String,
+    /// Discord user ID, digits only.
+    pub user_id: String,
+    /// Optional reason recorded in Discord's audit log, up to 512 characters.
+    pub reason: Option<String>,
+    /// Validate and report without changing membership. Off by default.
+    pub dry_run: Option<bool>,
+}
+
+/// Arguments for `discord_ban_member`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BanMemberArgs {
+    /// Discord guild (server) ID, digits only.
+    pub guild_id: String,
+    /// Discord user ID, digits only.
+    pub user_id: String,
+    /// Seconds of recent messages to delete with the ban, 0-604800. Defaults to 0.
+    pub delete_message_seconds: Option<u32>,
+    /// Optional reason recorded in Discord's audit log, up to 512 characters.
+    pub reason: Option<String>,
+    /// Validate and report without banning. Off by default.
+    pub dry_run: Option<bool>,
+}
+
+/// Arguments for `discord_timeout_member`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TimeoutMemberArgs {
+    /// Discord guild (server) ID, digits only.
+    pub guild_id: String,
+    /// Discord user ID, digits only.
+    pub user_id: String,
+    /// Timeout length in seconds, 1-2419200 (28 days).
+    pub duration_seconds: u32,
+    /// Optional reason recorded in Discord's audit log, up to 512 characters.
+    pub reason: Option<String>,
+    /// Validate and report without timing out the member. Off by default.
+    pub dry_run: Option<bool>,
+}
+
+/// Arguments for `discord_clear_member_timeout`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ClearMemberTimeoutArgs {
+    /// Discord guild (server) ID, digits only.
+    pub guild_id: String,
+    /// Discord user ID, digits only.
+    pub user_id: String,
+    /// Optional reason recorded in Discord's audit log, up to 512 characters.
+    pub reason: Option<String>,
+    /// Validate and report without clearing the timeout. Off by default.
+    pub dry_run: Option<bool>,
+}
+
 /// The result of scanning every visible text channel for one author.
 #[derive(Serialize)]
 struct UserMessageScan {
@@ -674,6 +820,7 @@ struct EnabledClasses {
     read: bool,
     write: bool,
     control: bool,
+    moderation: bool,
     administrative: bool,
 }
 
@@ -991,7 +1138,7 @@ impl DiscordMcpServer {
 
     #[tool(
         name = "discord_send_message",
-        description = "Send one message to a Discord channel on policy.channel_allowlist. Writes are disabled by default; mentions are neutralised, the length limit applies, the send counts against policy.autonomy.max_actions_per_minute and max_sends_per_channel_per_minute, and every attempt is audited.",
+        description = "Send one message to a Discord channel on policy.channel_allowlist. Writes are disabled by default; content, embeds, files and replies are bounded, mentions are neutralised, the send counts against policy.autonomy.max_actions_per_minute and max_sends_per_channel_per_minute, and every attempt is audited.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1005,9 +1152,15 @@ impl DiscordMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         Ok(tool_call("discord_send_message", async {
             let channel_id = ChannelId::parse(&args.channel_id)?;
+            let draft = MessageDraft {
+                content: args.content,
+                embeds: args.embeds.into_iter().map(Into::into).collect(),
+                attachment_paths: args.files.into_iter().map(PathBuf::from).collect(),
+                reply_to: parse_optional(&args.reply_to, MessageId::parse)?,
+            };
             self.state()
                 .discord()
-                .send_message(&channel_id, &args.content)
+                .send_message(&channel_id, &draft)
                 .await
         })
         .await)
@@ -1034,6 +1187,7 @@ impl DiscordMcpServer {
                     read: policy.read_enabled,
                     write: policy.write_enabled,
                     control: policy.control_enabled,
+                    moderation: policy.moderation_enabled,
                     administrative: policy.administrative_enabled,
                 },
                 limits: AutonomyLimits {
@@ -1792,6 +1946,201 @@ impl DiscordMcpServer {
         })
         .await)
     }
+
+    #[tool(
+        name = "discord_set_member_nickname",
+        description = "Set or clear one guild member's nickname. An empty `nickname` clears it; otherwise it is 1-32 characters. Needs MANAGE_NICKNAMES, policy.moderation_enabled and the guild allowlist. Pass dry_run to validate without changing it.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn discord_set_member_nickname(
+        &self,
+        Parameters(args): Parameters<MemberNicknameArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(tool_call("discord_set_member_nickname", async {
+            let guild_id = GuildId::parse(&args.guild_id)?;
+            let user_id = UserId::parse(&args.user_id)?;
+            let outcome = self
+                .state()
+                .discord()
+                .set_member_nickname(
+                    &guild_id,
+                    &user_id,
+                    Some(args.nickname.as_str()),
+                    args.reason.as_deref(),
+                    args.dry_run.unwrap_or(false),
+                )
+                .await?;
+            Ok(mutation_report("discord_set_member_nickname", outcome))
+        })
+        .await)
+    }
+
+    #[tool(
+        name = "discord_kick_member",
+        description = "Kick a member from a guild. They can rejoin with a valid invite. Needs KICK_MEMBERS, policy.moderation_enabled and the guild allowlist. Pass dry_run to validate without kicking.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn discord_kick_member(
+        &self,
+        Parameters(args): Parameters<MemberModerationArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(tool_call("discord_kick_member", async {
+            let guild_id = GuildId::parse(&args.guild_id)?;
+            let user_id = UserId::parse(&args.user_id)?;
+            let outcome = self
+                .state()
+                .discord()
+                .kick_member(
+                    &guild_id,
+                    &user_id,
+                    args.reason.as_deref(),
+                    args.dry_run.unwrap_or(false),
+                )
+                .await?;
+            Ok(mutation_report("discord_kick_member", outcome))
+        })
+        .await)
+    }
+
+    #[tool(
+        name = "discord_ban_member",
+        description = "Ban a guild member or user ID, optionally deleting up to 604800 seconds (7 days) of their messages. Needs BAN_MEMBERS, policy.moderation_enabled and the guild allowlist. Pass dry_run to validate without banning.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn discord_ban_member(
+        &self,
+        Parameters(args): Parameters<BanMemberArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(tool_call("discord_ban_member", async {
+            let guild_id = GuildId::parse(&args.guild_id)?;
+            let user_id = UserId::parse(&args.user_id)?;
+            let outcome = self
+                .state()
+                .discord()
+                .ban_member(
+                    &guild_id,
+                    &user_id,
+                    args.delete_message_seconds.unwrap_or(0),
+                    args.reason.as_deref(),
+                    args.dry_run.unwrap_or(false),
+                )
+                .await?;
+            Ok(mutation_report("discord_ban_member", outcome))
+        })
+        .await)
+    }
+
+    #[tool(
+        name = "discord_unban_member",
+        description = "Remove a ban for a user ID. Needs BAN_MEMBERS, policy.moderation_enabled and the guild allowlist. Pass dry_run to validate without unbanning.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn discord_unban_member(
+        &self,
+        Parameters(args): Parameters<MemberModerationArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(tool_call("discord_unban_member", async {
+            let guild_id = GuildId::parse(&args.guild_id)?;
+            let user_id = UserId::parse(&args.user_id)?;
+            let outcome = self
+                .state()
+                .discord()
+                .unban_member(
+                    &guild_id,
+                    &user_id,
+                    args.reason.as_deref(),
+                    args.dry_run.unwrap_or(false),
+                )
+                .await?;
+            Ok(mutation_report("discord_unban_member", outcome))
+        })
+        .await)
+    }
+
+    #[tool(
+        name = "discord_timeout_member",
+        description = "Time out a member for 1-2419200 seconds (up to 28 days), preventing them from sending messages or joining voice. Needs MODERATE_MEMBERS, policy.moderation_enabled and the guild allowlist. Pass dry_run to validate without applying it.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn discord_timeout_member(
+        &self,
+        Parameters(args): Parameters<TimeoutMemberArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(tool_call("discord_timeout_member", async {
+            let guild_id = GuildId::parse(&args.guild_id)?;
+            let user_id = UserId::parse(&args.user_id)?;
+            let outcome = self
+                .state()
+                .discord()
+                .timeout_member(
+                    &guild_id,
+                    &user_id,
+                    args.duration_seconds,
+                    args.reason.as_deref(),
+                    args.dry_run.unwrap_or(false),
+                )
+                .await?;
+            Ok(mutation_report("discord_timeout_member", outcome))
+        })
+        .await)
+    }
+
+    #[tool(
+        name = "discord_clear_member_timeout",
+        description = "Remove an active timeout from a member. Needs MODERATE_MEMBERS, policy.moderation_enabled and the guild allowlist. Pass dry_run to validate without clearing it.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn discord_clear_member_timeout(
+        &self,
+        Parameters(args): Parameters<ClearMemberTimeoutArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(tool_call("discord_clear_member_timeout", async {
+            let guild_id = GuildId::parse(&args.guild_id)?;
+            let user_id = UserId::parse(&args.user_id)?;
+            let outcome = self
+                .state()
+                .discord()
+                .clear_member_timeout(
+                    &guild_id,
+                    &user_id,
+                    args.reason.as_deref(),
+                    args.dry_run.unwrap_or(false),
+                )
+                .await?;
+            Ok(mutation_report("discord_clear_member_timeout", outcome))
+        })
+        .await)
+    }
 }
 
 #[cfg(test)]
@@ -1829,6 +2178,9 @@ mod tests {
             timestamp: "2026-11-18T09:12:44Z".to_string(),
             edited_timestamp: None,
             attachment_count: 0,
+            embeds: Vec::new(),
+            reactions: Vec::new(),
+            attachments: Vec::new(),
         }
     }
 

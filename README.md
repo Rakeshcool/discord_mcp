@@ -54,10 +54,10 @@ For a client that launches stdio servers (Claude Desktop uses
 ```
 
 **Message text needs the Message Content intent.** Without it Discord returns
-empty `content` in REST responses too, so `discord_get_messages` reports
-`content: null` for every message the bot did not send itself — the tool is
-working, the data is withheld. The **Server Members** intent is the same story
-for the member tools.
+empty `content`, `embeds` and `attachments` in REST responses too, so
+`discord_get_messages` reports `content: null` and empty rich fields for every
+message the bot did not send itself — the tool is working, the data is withheld.
+The **Server Members** intent is the same story for the member tools.
 
 ## Configuration
 
@@ -77,15 +77,16 @@ lists the variable names.
 
 ## What it can do
 
-33 tools, grouped by the policy flag that enables them.
+39 tools, grouped by the policy flag that enables them.
 
 | Area | Tools | Enabled by |
 |---|---|---|
 | Capabilities | `discord_get_capabilities` | `read_enabled` (default on) |
 | Read | `discord_list_guilds`, `discord_get_guild`, `discord_list_channels`, `discord_get_channel`, `discord_get_messages`, `discord_get_user_messages`, `discord_get_message`, `discord_list_members`, `discord_get_member` | `read_enabled` (default on) |
 | Messages | `discord_send_message`, `discord_edit_message`, `discord_add_reaction`, `discord_remove_reaction`, `discord_clear_reactions`, `discord_pin_message`, `discord_unpin_message` | `write_enabled` |
-| Moderation | `discord_delete_message` | `control_enabled` |
-| Moderation | `discord_bulk_delete_messages` | `administrative_enabled` |
+| Message moderation | `discord_delete_message` | `control_enabled` |
+| Member moderation | `discord_set_member_nickname`, `discord_kick_member`, `discord_ban_member`, `discord_unban_member`, `discord_timeout_member`, `discord_clear_member_timeout` | `moderation_enabled` |
+| Guild moderation | `discord_bulk_delete_messages` | `administrative_enabled` |
 | Structure | `discord_create_channel`, `discord_edit_channel`, `discord_delete_channel`, `discord_set_permission_overwrite`, `discord_delete_permission_overwrite`, `discord_create_thread`, `discord_edit_thread`, `discord_create_invite`, `discord_delete_invite` | `control_enabled` |
 | Roles | `discord_create_role`, `discord_edit_role`, `discord_delete_role`, `discord_assign_role`, `discord_remove_role` | `administrative_enabled` |
 
@@ -102,12 +103,14 @@ allowlist:
 |---|---|---|
 | `write_enabled` | send/edit messages, reactions, pins | `channel_allowlist` |
 | `control_enabled` | delete a message, channels, permission overwrites, threads, invites | `channel_allowlist` |
+| `moderation_enabled` | nicknames, kicks, bans, unbans and timeouts | `guild_allowlist` |
 | `administrative_enabled` | bulk delete, all role tools | `guild_allowlist` |
 
 ```toml
 [policy]
 write_enabled = true
 control_enabled = true
+moderation_enabled = true
 administrative_enabled = true
 channel_allowlist = ["1572365820133118035"]
 guild_allowlist = ["1572365819281932408"]
@@ -140,9 +143,21 @@ allowlist, the rolling budget, `dry_run` as the plan step and the audit record o
 every attempt; a client that needs human sign-off asks for it before the real
 call.
 
+`discord_send_message` accepts text, rich embeds, local files and a reply target.
+Text, embed fields, file count and file sizes are all bounded locally before the
+request. File uploads are disabled unless `policy.attachment_root` is set, and a
+path may not escape that directory.
+
 Bulk delete additionally enforces Discord's 2–100 message range, the 14-day
 window and `policy.autonomy.max_bulk_delete`. Mass mentions stay off: parsed
 `@everyone`, `@here`, role and user mentions are not sent as live pings.
+
+Member moderation is a separate opt-in class. Nicknames are 1–32 characters
+(an empty string clears one), reasons are capped at 512 characters, a ban may
+delete at most seven days of messages, and timeouts run from one second to 28
+days. The bot cannot target itself, and every action needs the matching Discord
+permission (`MANAGE_NICKNAMES`, `KICK_MEMBERS`, `BAN_MEMBERS` or
+`MODERATE_MEMBERS`).
 
 Structural tools stay inside the allowlist: a thread is checked through its
 parent channel, an invite through the channel it points at, and a channel these

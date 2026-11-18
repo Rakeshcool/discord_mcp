@@ -16,8 +16,8 @@ use async_trait::async_trait;
 use crate::discord::ids::{ChannelId, GuildId, MessageId, RoleId, UserId};
 use crate::discord::models::{
     BotIdentity, ChannelEdit, ChannelSummary, GuildDetail, GuildSummary, InviteSummary,
-    MemberSummary, MessageQuery, MessageSummary, NewChannel, NewInvite, NewRole, NewThread,
-    OverwriteTarget, Page, RoleEdit, RoleSummary,
+    MemberSummary, MessageDraft, MessageQuery, MessageSummary, NewChannel, NewInvite, NewRole,
+    NewThread, OverwriteTarget, Page, RoleEdit, RoleSummary,
 };
 use crate::discord::permissions::PermissionBits;
 use crate::error::AppError;
@@ -96,14 +96,15 @@ pub trait DiscordApi: Send + Sync + std::fmt::Debug {
 
     /// Send one message to a channel.
     ///
-    /// `content` has already passed policy: it is non-empty, within the configured
-    /// length, and mention-neutralised. An implementation must still send it with
-    /// mentions explicitly disabled, so a formatting change upstream can never
-    /// turn into a notification.
+    /// Every field has already passed policy: content is within the configured
+    /// length and mention-neutralised, embeds are bounded, and file paths are
+    /// canonical files beneath `policy.attachment_root`. An implementation must
+    /// still send with mentions explicitly disabled, so a formatting change
+    /// upstream can never turn into a notification.
     async fn send_message(
         &self,
         channel_id: &ChannelId,
-        content: &str,
+        message: &MessageDraft,
     ) -> Result<MessageSummary, AppError>;
 
     /// Replace a message's content. Mentions are neutralised by policy first.
@@ -289,6 +290,63 @@ pub trait DiscordApi: Send + Sync + std::fmt::Debug {
         guild_id: &GuildId,
         user_id: &UserId,
         role_id: &RoleId,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError>;
+
+    /// Set or clear one member's nickname. `None` clears it.
+    async fn set_member_nickname(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        nickname: Option<&str>,
+        reason: Option<&str>,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError>;
+
+    /// Remove a member from a guild without banning them.
+    async fn kick_member(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        reason: Option<&str>,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError>;
+
+    /// Ban a member, optionally deleting recent messages.
+    async fn ban_member(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        delete_message_seconds: u32,
+        reason: Option<&str>,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError>;
+
+    /// Remove a ban from a user ID.
+    async fn unban_member(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        reason: Option<&str>,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError>;
+
+    /// Time out a member until `duration_seconds` from now.
+    async fn timeout_member(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        duration_seconds: u32,
+        reason: Option<&str>,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError>;
+
+    /// Remove a member's timeout.
+    async fn clear_member_timeout(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        reason: Option<&str>,
         dry_run: bool,
     ) -> Result<MutationOutcome<()>, AppError>;
 

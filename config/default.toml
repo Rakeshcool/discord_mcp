@@ -42,13 +42,22 @@ protected_channels = []                   # never edited or deleted, even if all
 protected_roles = []                      # never edited or deleted, even if allowlisted
 max_messages_per_read = 100
 max_message_characters = 2000
+max_embeds_per_message = 10               # Discord's ceiling is 10
+max_embed_characters = 6000               # total across all embeds on one send
+max_attachments_per_message = 10          # Discord's ceiling is 10
+max_attachment_bytes = 8388608            # 8 MiB per file
+max_attachment_total_bytes = 16777216     # 16 MiB across one send
+# File uploads are disabled unless this names a directory. Tool paths must stay
+# beneath it; absolute paths and `..` escapes are refused.
+# attachment_root = "C:\\path\\to\\uploads"
 allow_mass_mentions = false               # must stay false in v1
 max_concurrent_requests = 8
 
 # Mutation classes beyond sending messages. Each is off by default and needs its
 # own allowlist before it can be enabled.
 control_enabled = false                   # channel, thread and invite control
-administrative_enabled = false            # roles, guild settings, automod, bulk delete
+moderation_enabled = false                # member nicknames, kicks, bans and timeouts
+administrative_enabled = false            # roles and bulk delete
 
 [policy.autonomy]
 max_actions_per_minute = 30               # shared budget across all mutations

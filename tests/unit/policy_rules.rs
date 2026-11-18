@@ -4,7 +4,10 @@ use discord_mcp::config::Config;
 use discord_mcp::config::schema::{AutonomyConfig, PolicyConfig};
 use discord_mcp::discord::ids::{ChannelId, GuildId};
 use discord_mcp::error::ErrorCategory;
-use discord_mcp::policy::rules::{Policy, ToolRisk, classify_tool, sanitize_mentions};
+use discord_mcp::policy::rules::{
+    Policy, ToolRisk, classify_tool, sanitize_mentions, validate_ban_delete_seconds,
+    validate_member_nickname, validate_moderation_reason, validate_timeout_seconds,
+};
 
 const READ_TOOLS: [&str; 9] = [
     "discord_list_guilds",
@@ -68,6 +71,48 @@ fn destructive_and_administrative_tools_have_their_own_classes() {
     );
     assert_eq!(ToolRisk::Destructive.as_str(), "destructive");
     assert_eq!(ToolRisk::Administrative.as_str(), "administrative");
+}
+
+#[test]
+fn member_moderation_tools_are_classified_as_moderation() {
+    for name in [
+        "discord_set_member_nickname",
+        "discord_kick_member",
+        "discord_ban_member",
+        "discord_unban_member",
+        "discord_timeout_member",
+        "discord_clear_member_timeout",
+    ] {
+        assert_eq!(classify_tool(name), Some(ToolRisk::Moderation), "{name}");
+    }
+    assert_eq!(ToolRisk::Moderation.as_str(), "moderation");
+}
+
+#[test]
+fn moderation_inputs_are_bounded_locally() {
+    assert_eq!(validate_member_nickname(""), Ok(None));
+    assert_eq!(
+        validate_member_nickname("  mod  "),
+        Ok(Some("mod".to_string()))
+    );
+    assert!(validate_member_nickname(&"x".repeat(32)).is_ok());
+    assert!(validate_member_nickname(&"x".repeat(33)).is_err());
+    assert!(validate_member_nickname("   ").is_err());
+    assert!(validate_member_nickname("bad\nname").is_err());
+
+    assert_eq!(validate_moderation_reason(None), Ok(None));
+    assert_eq!(validate_moderation_reason(Some("  ")), Ok(None));
+    assert!(validate_moderation_reason(Some(&"x".repeat(512))).is_ok());
+    assert!(validate_moderation_reason(Some(&"x".repeat(513))).is_err());
+    assert!(validate_moderation_reason(Some("line\nbreak")).is_err());
+
+    assert!(validate_ban_delete_seconds(0).is_ok());
+    assert!(validate_ban_delete_seconds(604_800).is_ok());
+    assert!(validate_ban_delete_seconds(604_801).is_err());
+    assert!(validate_timeout_seconds(1).is_ok());
+    assert!(validate_timeout_seconds(2_419_200).is_ok());
+    assert!(validate_timeout_seconds(0).is_err());
+    assert!(validate_timeout_seconds(2_419_201).is_err());
 }
 
 #[test]

@@ -3,6 +3,39 @@
 Notable changes to `discord-mcp`, grouped by capability rather than by commit —
 `TASKS.md` is the unit of work in this project.
 
+## Unreleased — member moderation
+
+- **Six member-moderation tools behind a new class.**
+  `discord_set_member_nickname`, `discord_kick_member`, `discord_ban_member`,
+  `discord_unban_member`, `discord_timeout_member` and
+  `discord_clear_member_timeout` are gated by `policy.moderation_enabled`, the
+  guild allowlist, the shared action budget and the same one-attempt/one-audit
+  path as every other mutation. Every tool accepts `dry_run`.
+- **Bounded inputs.** Nicknames are trimmed to 1–32 characters and an exactly
+  empty string clears one; reasons are capped at 512 characters and reject
+  newlines/NUL; a ban deletes at most seven days of messages; a timeout is 1
+  second–28 days. The bot refuses to moderate itself on a real call.
+- **Audit records identify the member.** `AuditTarget` now carries an optional
+  user ID, so a moderation record names both the guild and its target without
+  recording the reason or any content. Live Discord permissions and hierarchy
+  remain authoritative, and the required permissions are documented.
+
+## Unreleased — rich messages
+
+- **Reads return rich message details.** `discord_get_messages`,
+  `discord_get_user_messages` and `discord_get_message` now include bounded
+  `embeds` (up to 10 embeds, 25 fields each), `reactions` (up to 20) and
+  `attachments` (up to 10 metadata summaries). String fields are capped with an
+  ellipsis; `attachment_count` still reports the complete count. Attachment bytes
+  and stickers are not returned.
+- **Sends accept embeds, files and replies.** `discord_send_message.content` is
+  optional when an embed or file carries the message; the tool also takes
+  `embeds`, relative `files` and `reply_to`. Embed fields and total characters are
+  checked locally against Discord's limits. File uploads are disabled unless
+  `policy.attachment_root` is set, and every path is canonicalised beneath it.
+  `policy.max_attachment_bytes` and `policy.max_attachment_total_bytes` bound
+  uploads before the budget is spent. Replies disable the reply ping.
+
 ## Unreleased — user message scan
 
 - **`discord_get_user_messages`.** Collects recent messages by one author across

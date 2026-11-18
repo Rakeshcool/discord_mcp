@@ -37,6 +37,7 @@ tokio = { version = "=1.54.1", features = [
     "signal",
     "io-std",
     "io-util",
+    "fs",
     "time",
     "net",
     "sync",
