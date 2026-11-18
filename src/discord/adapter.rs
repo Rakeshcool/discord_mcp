@@ -25,7 +25,7 @@ use twilight_http::response::ResponseFuture;
 use twilight_http::response::marker::ListBody;
 use twilight_model::channel::message::Message;
 use twilight_model::channel::{Channel, ChannelType};
-use twilight_model::guild::{Guild, Member, Permissions};
+use twilight_model::guild::{Guild, Member};
 use twilight_model::id::Id;
 use twilight_model::id::marker::{ChannelMarker, GuildMarker, MessageMarker, UserMarker};
 use twilight_model::user::{CurrentUser, CurrentUserGuild};
@@ -37,8 +37,8 @@ use crate::discord::client::{
 use crate::discord::errors::{map_discord_error, read_body_error};
 use crate::discord::ids::{ChannelId, GuildId, MessageId, UserId};
 use crate::discord::models::{
-    BotIdentity, ChannelKind, ChannelSummary, GuildDetail, GuildPermissions, GuildSummary,
-    MemberSummary, MessageAuthor, MessageQuery, MessageSummary, Page,
+    BotIdentity, ChannelKind, ChannelSummary, GuildDetail, GuildSummary, MemberSummary,
+    MessageAuthor, MessageQuery, MessageSummary, Page,
 };
 use crate::discord::rate_limit::{backoff, is_transient};
 use crate::error::{AppError, ErrorCategory};
@@ -467,46 +467,6 @@ impl DiscordApi for TwilightDiscord {
         })
     }
 
-    async fn guild_permissions(&self, guild_id: &GuildId) -> Result<GuildPermissions, AppError> {
-        let user: CurrentUser = self
-            .send("discord_get_capabilities", || {
-                read_one(IntoFuture::into_future(self.client.current_user()))
-            })
-            .await?;
-        let guild: Guild = self
-            .send("discord_get_capabilities", || {
-                read_one(IntoFuture::into_future(
-                    self.client.guild(Id::new(guild_id.get())),
-                ))
-            })
-            .await?;
-        let member: Member = self
-            .send("discord_get_capabilities", || {
-                read_one(IntoFuture::into_future(
-                    self.client.guild_member(Id::new(guild_id.get()), user.id),
-                ))
-            })
-            .await?;
-
-        // `@everyone` is the role whose id equals the guild id. A member's
-        // permissions are the union of it and every role they hold; channel
-        // overwrites are a per-channel question and are not applied here.
-        let mut held = Permissions::empty();
-        for role in &guild.roles {
-            let is_everyone = role.id.get() == guild.id.get();
-            let is_held = member.roles.contains(&role.id);
-            if is_everyone || is_held {
-                held |= role.permissions;
-            }
-        }
-
-        Ok(GuildPermissions {
-            guild_id: *guild_id,
-            permissions: permission_names(held),
-            administrator: held.contains(Permissions::ADMINISTRATOR),
-        })
-    }
-
     async fn edit_message(
         &self,
         channel_id: &ChannelId,
@@ -677,66 +637,6 @@ fn reaction_type(emoji: &str) -> Result<RequestReactionType<'_>, AppError> {
         ));
     }
     Ok(RequestReactionType::Unicode { name: emoji })
-}
-
-/// The names of the permissions held, in Discord's documented bit order.
-fn permission_names(held: Permissions) -> Vec<String> {
-    const NAMED: [(Permissions, &str); 40] = [
-        (Permissions::CREATE_INVITE, "CREATE_INSTANT_INVITE"),
-        (Permissions::KICK_MEMBERS, "KICK_MEMBERS"),
-        (Permissions::BAN_MEMBERS, "BAN_MEMBERS"),
-        (Permissions::ADMINISTRATOR, "ADMINISTRATOR"),
-        (Permissions::MANAGE_CHANNELS, "MANAGE_CHANNELS"),
-        (Permissions::MANAGE_GUILD, "MANAGE_GUILD"),
-        (Permissions::ADD_REACTIONS, "ADD_REACTIONS"),
-        (Permissions::VIEW_AUDIT_LOG, "VIEW_AUDIT_LOG"),
-        (Permissions::PRIORITY_SPEAKER, "PRIORITY_SPEAKER"),
-        (Permissions::STREAM, "STREAM"),
-        (Permissions::VIEW_CHANNEL, "VIEW_CHANNEL"),
-        (Permissions::SEND_MESSAGES, "SEND_MESSAGES"),
-        (Permissions::SEND_TTS_MESSAGES, "SEND_TTS_MESSAGES"),
-        (Permissions::MANAGE_MESSAGES, "MANAGE_MESSAGES"),
-        (Permissions::EMBED_LINKS, "EMBED_LINKS"),
-        (Permissions::ATTACH_FILES, "ATTACH_FILES"),
-        (Permissions::READ_MESSAGE_HISTORY, "READ_MESSAGE_HISTORY"),
-        (Permissions::MENTION_EVERYONE, "MENTION_EVERYONE"),
-        (Permissions::USE_EXTERNAL_EMOJIS, "USE_EXTERNAL_EMOJIS"),
-        (Permissions::VIEW_GUILD_INSIGHTS, "VIEW_GUILD_INSIGHTS"),
-        (Permissions::CONNECT, "CONNECT"),
-        (Permissions::SPEAK, "SPEAK"),
-        (Permissions::MUTE_MEMBERS, "MUTE_MEMBERS"),
-        (Permissions::DEAFEN_MEMBERS, "DEAFEN_MEMBERS"),
-        (Permissions::MOVE_MEMBERS, "MOVE_MEMBERS"),
-        (Permissions::USE_VAD, "USE_VAD"),
-        (Permissions::CHANGE_NICKNAME, "CHANGE_NICKNAME"),
-        (Permissions::MANAGE_NICKNAMES, "MANAGE_NICKNAMES"),
-        (Permissions::MANAGE_ROLES, "MANAGE_ROLES"),
-        (Permissions::MANAGE_WEBHOOKS, "MANAGE_WEBHOOKS"),
-        (
-            Permissions::MANAGE_GUILD_EXPRESSIONS,
-            "MANAGE_GUILD_EXPRESSIONS",
-        ),
-        (Permissions::USE_SLASH_COMMANDS, "USE_APPLICATION_COMMANDS"),
-        (Permissions::REQUEST_TO_SPEAK, "REQUEST_TO_SPEAK"),
-        (Permissions::MANAGE_EVENTS, "MANAGE_EVENTS"),
-        (Permissions::MANAGE_THREADS, "MANAGE_THREADS"),
-        (Permissions::CREATE_PUBLIC_THREADS, "CREATE_PUBLIC_THREADS"),
-        (
-            Permissions::CREATE_PRIVATE_THREADS,
-            "CREATE_PRIVATE_THREADS",
-        ),
-        (Permissions::USE_EXTERNAL_STICKERS, "USE_EXTERNAL_STICKERS"),
-        (
-            Permissions::SEND_MESSAGES_IN_THREADS,
-            "SEND_MESSAGES_IN_THREADS",
-        ),
-        (Permissions::MODERATE_MEMBERS, "MODERATE_MEMBERS"),
-    ];
-    NAMED
-        .iter()
-        .filter(|(permission, _)| held.contains(*permission))
-        .map(|(_, name)| (*name).to_string())
-        .collect()
 }
 
 /// Reject a zero page size and clamp anything above Discord's maximum.
