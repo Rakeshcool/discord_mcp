@@ -191,15 +191,17 @@ Everything below is implemented and tested on the branch; this is its gate.
 - [x] `cargo fmt --all --check` passes.
 - [x] `cargo clippy --all-targets --all-features -- -D warnings` passes.
 - [x] Live role-tool checks in the test guild: create/edit/delete/assign/remove, dry runs, `@everyone` refusals, `ADMINISTRATOR` refusal, and above-bot calls returning `403` / `50013`.
+- [x] Live run through MCP Bridge over stdio and Streamable HTTP: 9/9 reads, message, structure, role and policy paths; results in `docs/LIVE_TESTING.md`.
 - [x] All mutation classes remain off in the built-in configuration.
 
 ### Outstanding on the branch
 
-- [ ] Live smoke for the message tools (edit, delete, bulk delete, reactions, pins).
-- [ ] Live smoke for the structure tools (channels, overwrites, threads, invites).
-- [ ] Live smoke for the HTTP transport against a branch build, including the refusal matrix.
-- [ ] Live budget exhaustion, a `require_dry_run` refusal and a `--read-only` session (unit-tested only so far).
+- [x] Live smoke for the message tools through MCP Bridge (send, edit, delete, reactions, pins, bulk delete); see `docs/LIVE_TESTING.md`.
+- [x] Live smoke for the structure tools (channel create/edit, overwrites, threads, invites); channel create/edit were refused by Discord for missing Manage Channels.
+- [x] Live smoke for the HTTP transport against a branch build, including the `401`/`403` refusal matrix and a bridge Streamable HTTP connection.
+- [x] Live budget exhaustion, a `require_dry_run` refusal and a `--read-only` session.
 - [ ] A second bot/integration role to observe Discord's managed-role delete and permission-edit refusals.
+- [ ] Positive `PIN_MESSAGES`, Manage Messages and Manage Threads paths (not granted to the test bot).
 - [ ] Open the PR, run CI, review and merge.
 
 **Release decision:** Do not merge while any security or policy acceptance criterion is unmet.

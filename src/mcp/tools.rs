@@ -549,12 +549,12 @@ fn check_color(color: Option<u32>) -> Result<Option<u32>, AppError> {
     }
 }
 
-/// `@everyone` is the guild's own ID; it exists and cannot be deleted or
-/// assigned, so those calls are refused before a request is built.
+/// `@everyone` is the guild's own ID; it exists and cannot be deleted, assigned
+/// or removed, so those calls are refused before a request is built.
 fn reject_everyone_role(guild_id: GuildId, role_id: RoleId) -> Result<(), AppError> {
     if guild_id.get() == role_id.get() {
         return Err(AppError::invalid_argument(
-            "`role_id` names @everyone, which cannot be deleted or assigned",
+            "`role_id` names @everyone, which cannot be deleted, assigned or removed",
         ));
     }
     Ok(())
@@ -964,7 +964,7 @@ impl DiscordMcpServer {
 
     #[tool(
         name = "discord_pin_message",
-        description = "Pin a message in its channel. Needs MANAGE_MESSAGES and policy.write_enabled.",
+        description = "Pin a message in its channel. Needs PIN_MESSAGES and policy.write_enabled.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -991,7 +991,7 @@ impl DiscordMcpServer {
 
     #[tool(
         name = "discord_unpin_message",
-        description = "Remove a pin from a message.",
+        description = "Remove a pin from a message. Needs PIN_MESSAGES and policy.write_enabled.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

@@ -435,6 +435,32 @@ fn tools_are_advertised_with_strict_schemas_and_honest_annotations() {
 }
 
 #[test]
+fn pin_tools_name_the_permission_they_need() {
+    let frames =
+        session("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}\n");
+    let responses = run_session("pin-permission", "", &frames);
+
+    let tools = response_with_id(&responses, 2)["result"]["tools"]
+        .as_array()
+        .expect("a tools array");
+    for name in ["discord_pin_message", "discord_unpin_message"] {
+        let tool = tools
+            .iter()
+            .find(|tool| tool["name"].as_str() == Some(name))
+            .unwrap_or_else(|| panic!("{name} must be advertised"));
+        let description = tool["description"].as_str().expect("a description");
+        assert!(
+            description.contains("PIN_MESSAGES"),
+            "{name} must name PIN_MESSAGES, got {description:?}"
+        );
+        assert!(
+            !description.contains("MANAGE_MESSAGES"),
+            "{name} must not claim MANAGE_MESSAGES, got {description:?}"
+        );
+    }
+}
+
+#[test]
 fn bulk_delete_is_refused_when_administrative_tools_are_off() {
     let frames = session(&tool_call(
         2,

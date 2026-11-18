@@ -191,6 +191,8 @@ build byte-reproducible and prints the artifact's SHA-256.
 - [`llm_instruction.md`](llm_instruction.md) — how an LLM works through the
   server: handshake, capability discovery, read and mutation workflows, result
   codes and safety rules.
+- [`docs/LIVE_TESTING.md`](docs/LIVE_TESTING.md) — the live run through MCP
+  Bridge: every tool exercised, policy and HTTP checks, findings and leftovers.
 - [`docs/SECURITY.md`](docs/SECURITY.md) — threat model and implemented controls.
 - [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md) — dependency choices and the
   advisory scan.
