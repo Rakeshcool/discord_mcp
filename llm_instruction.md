@@ -238,7 +238,8 @@ Rules:
 - To find one user's recent messages across a guild, call
   `discord_get_user_messages` with `guild_id` and `user_id`. It scans the newest
   `scan_limit` messages (default 100) in each visible text/announcement channel;
-  it is a bounded scan, not Discord search or full history.
+  one call issues at most 50 history requests and reports `global_truncated` if
+  that cap stops it. It is a bounded scan, not Discord search or full history.
 - `discord://guilds` is the resource equivalent of the default guild listing.
 
 ---

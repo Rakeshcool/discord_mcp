@@ -158,7 +158,7 @@ The v1 feature set is intentionally narrow and permission-aware.
 | `discord_list_channels` | List guild channels | Respect bot visibility and permissions |
 | `discord_get_channel` | Get channel metadata | Validate channel access |
 | `discord_get_messages` | Read recent messages from a channel | Bounded page size; only accessible channels |
-| `discord_get_user_messages` | Collect recent messages by one author across visible text channels | Bounded per-channel scan; policy-filtered; no Discord search endpoint |
+| `discord_get_user_messages` | Collect recent messages by one author across visible text channels | Bounded per-channel scan, 50-request global cap; policy-filtered; no Discord search endpoint |
 | `discord_get_message` | Fetch one message by channel and message ID | Verify channel access |
 | `discord_list_members` | List members where supported | Require necessary intent/API permissions; bounded pagination |
 | `discord_get_member` | Fetch member metadata | Respect visibility and permissions |
