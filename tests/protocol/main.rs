@@ -525,6 +525,32 @@ fn a_role_cannot_grant_administrator() {
 }
 
 #[test]
+fn role_names_over_the_documented_limit_are_refused_before_a_request() {
+    let too_long = "x".repeat(101);
+    let arguments = format!(r#"{{"guild_id":"1","name":"{too_long}","dry_run":true}}"#);
+    let responses = run_session(
+        "create-role-name-too-long",
+        "[policy]\nadministrative_enabled = true\nguild_allowlist = [\"1\"]\n",
+        &session(&tool_call(2, "discord_create_role", &arguments)),
+    );
+
+    let text = tool_error_text(response_with_id(&responses, 2));
+    assert!(text.starts_with("INVALID_ARGUMENT"), "got {text:?}");
+    assert!(text.contains("1-100"), "got {text:?}");
+
+    let at_limit = "x".repeat(100);
+    let arguments = format!(r#"{{"guild_id":"1","name":"{at_limit}","dry_run":true}}"#);
+    let responses = run_session(
+        "create-role-name-at-limit",
+        "[policy]\nadministrative_enabled = true\nguild_allowlist = [\"1\"]\n",
+        &session(&tool_call(2, "discord_create_role", &arguments)),
+    );
+
+    let result = &response_with_id(&responses, 2)["result"];
+    assert_eq!(result["isError"], false, "{result}");
+}
+
+#[test]
 fn a_dry_run_role_reports_the_plan_without_a_request() {
     let frames = session(&tool_call(
         2,

@@ -517,6 +517,18 @@ fn require_name(value: &str, field: &str) -> Result<String, AppError> {
     Ok(trimmed.to_string())
 }
 
+/// Trim a role name and enforce Discord's documented 1-100 character limit
+/// before the request is built.
+fn require_role_name(value: &str, field: &str) -> Result<String, AppError> {
+    let name = require_name(value, field)?;
+    if name.chars().count() > 100 {
+        return Err(AppError::invalid_argument(format!(
+            "`{field}` must be 1-100 characters"
+        )));
+    }
+    Ok(name)
+}
+
 fn parse_overwrite_target(id: &str, kind: &str) -> Result<OverwriteTarget, AppError> {
     match kind.trim().to_ascii_lowercase().as_str() {
         "role" => Ok(OverwriteTarget::Role(RoleId::parse(id)?)),
@@ -1354,7 +1366,7 @@ impl DiscordMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         Ok(tool_call("discord_create_role", async {
             let guild_id = GuildId::parse(&args.guild_id)?;
-            let name = require_name(&args.name, "name")?;
+            let name = require_role_name(&args.name, "name")?;
             let permissions = crate::discord::permissions::resolve(
                 &args.permissions.unwrap_or_default(),
                 "permissions",
@@ -1408,7 +1420,7 @@ impl DiscordMcpServer {
                 name: args
                     .name
                     .as_deref()
-                    .map(|name| require_name(name, "name"))
+                    .map(|name| require_role_name(name, "name"))
                     .transpose()?,
                 permissions: args
                     .permissions
