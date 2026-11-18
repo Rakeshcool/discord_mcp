@@ -17,7 +17,8 @@ for the full specification, `TASKS.md` for the phased plan,
 Through Phase 9 — read access over STDIO and Streamable HTTP, one audited write
 tool that is disabled by default, and a tagged `v0.1.0` release with a committed
 checksum. The remaining write operations (edit, delete, reactions) are not
-started, and the Phase 10 release gate is unsigned.
+started. The Phase 10 release gate is signed off against a locally built
+artifact; nothing is published.
 
 Implemented: typed configuration with fail-closed validation, stable error
 categories, secret wrapper, structural secret redaction, stderr-only logging,
@@ -42,8 +43,8 @@ Not implemented yet:
   covered by process tests.
 - **Deployment.** TLS termination is not implemented; a reverse proxy has to
   terminate it, and `docs/SETUP.md` §7 documents the settings it must use.
-- **Packaging.** `v0.1.0` is a local tag; nothing is published, and the release
-  gate (`TASKS.md` Phase 10) has not been signed off against a shipped artifact.
+- **Packaging.** `v0.1.0` is a local tag and nothing is published; the Phase 10
+  gate was signed off against a locally built artifact, not a shipped one.
 - **Credential store.** The bot token comes from the environment; Windows
   Credential Manager is documented as a launcher pattern, not read natively.
 
