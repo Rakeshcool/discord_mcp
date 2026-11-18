@@ -279,7 +279,10 @@ and disconnect recovery; event replay after a reconnect (resumption) is not.
 - [x] Generate SHA-256 checksum.
       `dist/discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256` records the hash of
       the release build from the tagged commit, with the command that regenerates
-      it; `docs/SETUP.md` §8 verifies it. The executable is not committed.
+      it; `docs/SETUP.md` §8 verifies it. The executable is not committed, and two
+      builds of the same commit are not byte-identical (verified by building
+      twice), so the file identifies one build rather than a reproducible input.
+      That limitation is documented rather than glossed over.
 - [x] Test clean installation on a Windows machine. A fresh `git worktree` of
       the tag was built with `cargo build --release --locked`, then
       `--validate-config` and a STDIO `initialize`/`tools/call` handshake were run

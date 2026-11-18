@@ -540,8 +540,11 @@ Run these in order; each one isolates a different layer.
    Get-Content dist\discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256
    ```
 
-   The two hashes must match. That file is regenerated from a local release build
-   with the command above; the executable itself is not committed.
+   They match only when you are holding the exact executable the file was written
+   for. Two builds of the same commit are **not** byte-identical — a relink stamps
+   the executable anew — so a binary you rebuilt yourself has a different hash.
+   That is not tampering: regenerate the file with the commands above against the
+   artifact you actually built. The executable itself is not committed.
 
 A quick scripted STDIO smoke test (PowerShell), which prints the JSON-RPC
 responses and nothing else:
