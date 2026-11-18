@@ -97,8 +97,11 @@ parent channel, an invite through the channel it points at, and a channel these
 tools create must be added to `channel_allowlist` before anything may edit or
 delete it. Role tools are guild-scoped, so `guild_allowlist` is their boundary,
 and editing a role's permissions replaces the whole set rather than merging into
-it. The bot's own highest role cannot be edited or deleted, unconditionally. A
-`dry_run` names the action and sends no request.
+it. They also need the bot's Discord **Manage Roles** permission, and Discord
+only lets the bot touch roles below its highest role; a missing permission or
+hierarchy refusal is `PERMISSION_DENIED`. The bot's own highest role cannot be
+edited or deleted, unconditionally. A `dry_run` names the action and sends no
+request.
 
 ## Streamable HTTP
 

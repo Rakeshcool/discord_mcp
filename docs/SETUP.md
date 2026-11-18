@@ -95,6 +95,14 @@ https://discord.com/oauth2/authorize?client_id=<APPLICATION_ID>&scope=bot&permis
 `Administrator` is never required. Local policy can only narrow what the bot may
 do, never widen Discord's own permissions.
 
+The invite above requests only read permissions. Role tools additionally need
+**Manage Roles**: grant it to the bot's role under **Server Settings → Roles**.
+While there, drag the bot's role above every role it must manage — Discord only
+allows a bot to change roles below its own highest role, and a role at or above
+it fails with `403` / code `50013` even when Manage Roles is granted. The role
+tools are enabled separately by `policy.administrative_enabled` and the guild
+allowlist; see [TOOLS.md §5](TOOLS.md#5-role-control).
+
 Verify the guild permissions the bot actually holds:
 
 ```powershell
@@ -103,7 +111,8 @@ curl.exe -s https://discord.com/api/v10/users/@me/guilds `
 ```
 
 Each entry has a `permissions` bitfield; `1024` (View Channels) and `65536`
-(Read Message History) must both be set.
+(Read Message History) must both be set, and role tools also need `268435456`
+(Manage Roles).
 
 **Intents and permissions are different things.** Permissions decide what the bot
 may do in a server; intents decide what data Discord puts in its responses. Both
