@@ -214,10 +214,10 @@ Minimum permissions the operator grants per guild:
 | Capability | Discord permission | Needed for |
 |---|---|---|
 | See channels | View Channels | every read tool |
-| Read history | Read Message History | `discord_get_messages`, `discord_get_message` |
+| Read history | Read Message History | `discord_get_messages`, `discord_get_user_messages`, `discord_get_message` |
 | Send messages | Send Messages | `discord_send_message`, only when writes are enabled |
 | Member data | `GUILD_MEMBERS` **privileged intent** (Developer Portal toggle) | `discord_list_members`, `discord_get_member` |
-| Message text | `MESSAGE_CONTENT` **privileged intent** (Developer Portal toggle) | non-empty `content` in `discord_get_messages`, `discord_get_message`; without it Discord returns empty `content`, `embeds`, `attachments` and `components` in REST responses too, so every message reads as `content: null` |
+| Message text | `MESSAGE_CONTENT` **privileged intent** (Developer Portal toggle) | non-empty `content` in `discord_get_messages`, `discord_get_user_messages`, `discord_get_message`; without it Discord returns empty `content`, `embeds`, `attachments` and `components` in REST responses too, so every message reads as `content: null` |
 
 `Administrator` is never required. Discord permissions remain the final
 authority: local policy can only narrow what the bot may do, never widen it.
@@ -234,6 +234,7 @@ Base: `https://discord.com/api/v10`, bot authentication via
 | `discord_list_channels` | `GET /guilds/{guild.id}/channels` | Includes the permission-filtered set the bot can see |
 | `discord_get_channel` | `GET /channels/{channel.id}` | 403 when the bot cannot view it |
 | `discord_get_messages` | `GET /channels/{channel.id}/messages` | `limit` 1–100, `before`/`after`/`around` cursors |
+| `discord_get_user_messages` | `GET /guilds/{guild.id}/channels` then `GET /channels/{channel.id}/messages` per text/announcement channel | Bounded per-channel scan; no Discord search endpoint |
 | `discord_get_message` | `GET /channels/{channel.id}/messages/{message.id}` | 404 when absent |
 | `discord_list_members` | `GET /guilds/{guild.id}/members` | `limit` 1–1000, requires the **privileged `GUILD_MEMBERS` intent** |
 | `discord_get_member` | `GET /guilds/{guild.id}/members/{user.id}` | Usually also needs `GUILD_MEMBERS` |

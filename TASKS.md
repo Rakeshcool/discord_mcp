@@ -2,8 +2,8 @@
 
 Status legend: `[x]` done or closed · `CLOSED` = deliberately out of v1 scope or
 not verifiable here, with the reason inline. Phases 0–9 are complete, Phase 10 is
-the historical v0.1.0 gate, and Phase 11 is the branch gate, with its remaining
-live checks listed under it.
+the historical v0.1.0 gate, Phase 11 is the server-control branch gate, and Phase
+12 is the current read-surface branch.
 
 ## Phase 0 — Discovery and technical decisions
 
@@ -208,3 +208,13 @@ Everything below is implemented and tested on the branch; this is its gate.
 - [ ] Open the PR, run CI, review and merge.
 
 **Release decision:** Do not merge while any security or policy acceptance criterion is unmet.
+
+## Phase 12 — Read surface (`feat/user-message-search`)
+
+- [x] `discord_get_user_messages`: scans the newest messages in every visible text and announcement channel for one author, bounded by `scan_limit` per channel and `limit` overall, filtered by `policy.channel_allowlist`, with per-channel errors and `has_more`/`truncated` reporting.
+- [x] Classified as a read tool, so `read_enabled`, guild checks and channel checks apply, and `require_dry_run` accepts its name.
+- [x] Documentation updated: `README.md`, `docs/TOOLS.md`, `SPEC.md`, `llm_instruction.md`, `CHANGELOG.md`.
+- [x] All 231 tests pass (17 lib, 50 integration, 35 protocol, 129 unit).
+- [ ] Live scan against the test guild, including a channel without Read Message History.
+
+**Release decision:** Merge only after the live scan confirms the per-channel error path.

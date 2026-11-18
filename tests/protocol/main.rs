@@ -357,6 +357,19 @@ fn a_write_to_an_unlisted_channel_is_refused_at_the_tool_boundary() {
 }
 
 #[test]
+fn a_zero_user_message_scan_limit_is_an_invalid_argument_tool_error() {
+    let frames = session(&tool_call(
+        2,
+        "discord_get_user_messages",
+        r#"{"guild_id":"1","user_id":"2","scan_limit":0}"#,
+    ));
+    let responses = run_session("user-scan-limit", "", &frames);
+
+    let text = tool_error_text(response_with_id(&responses, 2));
+    assert!(text.starts_with("INVALID_ARGUMENT"), "got {text:?}");
+}
+
+#[test]
 fn an_oversized_message_page_is_an_invalid_argument_tool_error() {
     let frames = session(&tool_call(
         2,
@@ -421,6 +434,7 @@ fn tools_are_advertised_with_strict_schemas_and_honest_annotations() {
             "discord_get_member",
             "discord_get_message",
             "discord_get_messages",
+            "discord_get_user_messages",
             "discord_list_channels",
             "discord_list_guilds",
             "discord_list_members",

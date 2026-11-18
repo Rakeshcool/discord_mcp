@@ -3,6 +3,16 @@
 Notable changes to `discord-mcp`, grouped by capability rather than by commit —
 `TASKS.md` is the unit of work in this project.
 
+## Unreleased — user message scan
+
+- **`discord_get_user_messages`.** Collects recent messages by one author across
+  every visible text and announcement channel in a guild, since Discord exposes
+  no bot search endpoint. It scans at most `scan_limit` newest messages per
+  channel (default 100), returns at most `limit` matches (default 50), skips
+  channels outside `policy.channel_allowlist`, and reports per-channel failures
+  without aborting the rest of the scan. This is a bounded history scan, not a
+  full-history export.
+
 ## Unreleased — server control, slice 1
 
 - **Capability model.** `policy.control_enabled` and

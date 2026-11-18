@@ -77,12 +77,12 @@ lists the variable names.
 
 ## What it can do
 
-32 tools, grouped by the policy flag that enables them.
+33 tools, grouped by the policy flag that enables them.
 
 | Area | Tools | Enabled by |
 |---|---|---|
 | Capabilities | `discord_get_capabilities` | `read_enabled` (default on) |
-| Read | `discord_list_guilds`, `discord_get_guild`, `discord_list_channels`, `discord_get_channel`, `discord_get_messages`, `discord_get_message`, `discord_list_members`, `discord_get_member` | `read_enabled` (default on) |
+| Read | `discord_list_guilds`, `discord_get_guild`, `discord_list_channels`, `discord_get_channel`, `discord_get_messages`, `discord_get_user_messages`, `discord_get_message`, `discord_list_members`, `discord_get_member` | `read_enabled` (default on) |
 | Messages | `discord_send_message`, `discord_edit_message`, `discord_add_reaction`, `discord_remove_reaction`, `discord_clear_reactions`, `discord_pin_message`, `discord_unpin_message` | `write_enabled` |
 | Moderation | `discord_delete_message` | `control_enabled` |
 | Moderation | `discord_bulk_delete_messages` | `administrative_enabled` |
