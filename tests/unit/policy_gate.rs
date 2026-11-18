@@ -59,7 +59,7 @@ enum Call {
     DeleteRole(u64, u64),
     AssignRole(u64, u64, u64),
     RemoveRole(u64, u64, u64),
-    BotHighestRole(u64),
+    HighestRoleOf(u64, u64),
     BotIdentity,
 }
 
@@ -616,15 +616,23 @@ impl DiscordApi for FakeDiscord {
         Ok(MutationOutcome::Applied(()))
     }
 
-    async fn bot_highest_role(&self, guild_id: &GuildId) -> Result<Option<RoleId>, AppError> {
-        self.record(Call::BotHighestRole(guild_id.get())).await?;
-        Ok(self
-            .bot_roles
-            .lock()
-            .expect("bot role map")
-            .get(&guild_id.get())
-            .copied()
-            .map(RoleId::from_u64))
+    async fn highest_role_of(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+    ) -> Result<Option<RoleId>, AppError> {
+        self.record(Call::HighestRoleOf(guild_id.get(), user_id.get()))
+            .await?;
+        let role = if user_id.get() == 99 {
+            self.bot_roles
+                .lock()
+                .expect("bot role map")
+                .get(&guild_id.get())
+                .copied()
+        } else {
+            None
+        };
+        Ok(role.map(RoleId::from_u64))
     }
 
     async fn get_invite(&self, code: &str) -> Result<InviteSummary, AppError> {
@@ -2019,7 +2027,7 @@ async fn editing_the_bots_highest_role_is_refused() {
     assert!(error.message().contains("highest role"), "got {error}");
     assert_eq!(
         fake.calls(),
-        vec![Call::BotHighestRole(1)],
+        vec![Call::BotIdentity, Call::HighestRoleOf(1, 99)],
         "the edit must not be sent"
     );
 }
@@ -2039,7 +2047,10 @@ async fn deleting_the_bots_highest_role_is_refused() {
         .expect_err("the bot's own highest role is protected");
 
     assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
-    assert_eq!(fake.calls(), vec![Call::BotHighestRole(1)]);
+    assert_eq!(
+        fake.calls(),
+        vec![Call::BotIdentity, Call::HighestRoleOf(1, 99)]
+    );
 }
 
 #[tokio::test]
@@ -2071,7 +2082,11 @@ async fn editing_another_role_still_reaches_discord() {
     );
     assert_eq!(
         fake.calls(),
-        vec![Call::BotHighestRole(1), Call::EditRole(1, 8)]
+        vec![
+            Call::BotIdentity,
+            Call::HighestRoleOf(1, 99),
+            Call::EditRole(1, 8)
+        ]
     );
 }
 
@@ -2098,7 +2113,7 @@ async fn removing_the_bots_highest_role_from_itself_is_refused() {
     assert!(error.message().contains("highest role"), "got {error}");
     assert_eq!(
         fake.calls(),
-        vec![Call::BotIdentity, Call::BotHighestRole(1)],
+        vec![Call::BotIdentity, Call::HighestRoleOf(1, 99)],
         "the removal must not be sent"
     );
 }
@@ -2147,7 +2162,7 @@ async fn removing_another_role_from_the_bot_is_allowed() {
         fake.calls(),
         vec![
             Call::BotIdentity,
-            Call::BotHighestRole(1),
+            Call::HighestRoleOf(1, 99),
             Call::RemoveRole(1, 99, 8)
         ]
     );

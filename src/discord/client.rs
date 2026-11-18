@@ -292,9 +292,13 @@ pub trait DiscordApi: Send + Sync + std::fmt::Debug {
         dry_run: bool,
     ) -> Result<MutationOutcome<()>, AppError>;
 
-    /// The bot's highest role in a guild, ignoring `@everyone`.
+    /// The highest role a member holds in a guild, ignoring `@everyone`.
     ///
-    /// `None` means the bot holds no role of its own, which is only possible in
-    /// a guild where `@everyone` is its whole membership.
-    async fn bot_highest_role(&self, guild_id: &GuildId) -> Result<Option<RoleId>, AppError>;
+    /// `None` means the member holds no role of its own. The bot-role guard uses
+    /// this for the bot itself.
+    async fn highest_role_of(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+    ) -> Result<Option<RoleId>, AppError>;
 }

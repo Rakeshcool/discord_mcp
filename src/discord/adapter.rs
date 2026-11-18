@@ -932,25 +932,21 @@ impl DiscordApi for TwilightDiscord {
         Ok(MutationOutcome::Applied(()))
     }
 
-    async fn bot_highest_role(&self, guild_id: &GuildId) -> Result<Option<RoleId>, AppError> {
+    async fn highest_role_of(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+    ) -> Result<Option<RoleId>, AppError> {
         let guild = Id::new(guild_id.get());
-        // The bot reads its own membership through the user and member routes:
-        // `/users/@me/guilds/{guild}/member` is an OAuth2 endpoint, not one a
-        // bot token can rely on.
-        let current: CurrentUser = self
-            .send("discord_bot_role", || {
-                read_one(IntoFuture::into_future(self.client.current_user()))
-            })
-            .await?;
         let member: Member = self
-            .send("discord_bot_role", || {
+            .send("discord_resolve_role", || {
                 read_one(IntoFuture::into_future(
-                    self.client.guild_member(guild, current.id),
+                    self.client.guild_member(guild, Id::new(user_id.get())),
                 ))
             })
             .await?;
         let roles: Vec<Role> = self
-            .send("discord_bot_role", || {
+            .send("discord_resolve_role", || {
                 read_many(IntoFuture::into_future(self.client.roles(guild)))
             })
             .await?;

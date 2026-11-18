@@ -824,7 +824,7 @@ impl DiscordApi for PolicyGate {
             "discord_edit_role",
             guild_id,
             dry_run,
-            self.authorize_role_target(guild_id, role_id),
+            self.authorize_role_guard(guild_id, role_id, None),
             async move {
                 let outcome = self.inner.edit_role(guild_id, role_id, spec, false).await?;
                 applied(outcome)
@@ -843,7 +843,7 @@ impl DiscordApi for PolicyGate {
             "discord_delete_role",
             guild_id,
             dry_run,
-            self.authorize_role_target(guild_id, role_id),
+            self.authorize_role_guard(guild_id, role_id, None),
             async move {
                 let outcome = self.inner.delete_role(guild_id, role_id, false).await?;
                 applied(outcome)
@@ -880,7 +880,7 @@ impl DiscordApi for PolicyGate {
             "discord_remove_role",
             guild_id,
             dry_run,
-            self.authorize_role_removal(guild_id, user_id, role_id),
+            self.authorize_role_guard(guild_id, role_id, Some(user_id)),
             async move {
                 let outcome = self
                     .inner
@@ -892,17 +892,21 @@ impl DiscordApi for PolicyGate {
         .await
     }
 
-    /// The gate's own bot-role read: no tool exposes it, but `DiscordApi` does,
+    /// The gate's own role lookup: no tool exposes it, but `DiscordApi` does,
     /// so it honours read policy and guild scope and is audited.
-    async fn bot_highest_role(&self, guild_id: &GuildId) -> Result<Option<RoleId>, AppError> {
+    async fn highest_role_of(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+    ) -> Result<Option<RoleId>, AppError> {
         self.run(
-            "discord_resolve_bot_role",
+            "discord_resolve_role",
             AuditTarget::for_guild(*guild_id),
             async {
                 self.policy.check_read_enabled()?;
                 self.policy.check_guild(guild_id)?;
                 let _permit = self.permit().await?;
-                self.inner.bot_highest_role(guild_id).await
+                self.inner.highest_role_of(guild_id, user_id).await
             },
         )
         .await
@@ -970,38 +974,27 @@ impl PolicyGate {
         .await
     }
 
-    /// Refuse an edit or deletion aimed at the bot's own highest role.
-    async fn authorize_role_target(
-        &self,
-        guild_id: &GuildId,
-        role_id: &RoleId,
-    ) -> Result<(), AppError> {
-        let _permit = self.permit().await?;
-        if self.inner.bot_highest_role(guild_id).await? == Some(*role_id) {
-            return Err(AppError::policy_blocked(format!(
-                "role {role_id} is the bot's own highest role in guild {guild_id}; editing or deleting it would remove the bot's access"
-            )));
-        }
-        Ok(())
-    }
-
-    /// Refuse removing the bot's own highest role from the bot itself.
+    /// Refuse a change or removal aimed at the bot's own highest role.
     ///
-    /// Removing a role from another member cannot lock the bot out, so the role
-    /// list is only fetched when the target is the bot.
-    async fn authorize_role_removal(
+    /// `user_id` is set for a member-role removal: taking a role from anyone
+    /// else cannot lock the bot out, so the role list is only fetched when that
+    /// member is the bot.
+    async fn authorize_role_guard(
         &self,
         guild_id: &GuildId,
-        user_id: &UserId,
         role_id: &RoleId,
+        user_id: Option<&UserId>,
     ) -> Result<(), AppError> {
         let _permit = self.permit().await?;
-        if self.inner.bot_identity().await?.id != *user_id {
+        let bot = self.inner.bot_identity().await?;
+        if let Some(user_id) = user_id
+            && bot.id != *user_id
+        {
             return Ok(());
         }
-        if self.inner.bot_highest_role(guild_id).await? == Some(*role_id) {
+        if self.inner.highest_role_of(guild_id, &bot.id).await? == Some(*role_id) {
             return Err(AppError::policy_blocked(format!(
-                "role {role_id} is the bot's own highest role in guild {guild_id}; removing it from the bot would remove its access"
+                "role {role_id} is the bot's own highest role in guild {guild_id}; changing or removing it would remove the bot's access"
             )));
         }
         Ok(())
