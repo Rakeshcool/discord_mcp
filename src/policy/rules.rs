@@ -48,6 +48,7 @@ pub fn classify_tool(name: &str) -> Option<ToolRisk> {
         | "discord_list_channels"
         | "discord_get_channel"
         | "discord_get_messages"
+        | "discord_get_user_messages"
         | "discord_get_message"
         | "discord_list_members"
         | "discord_get_member"

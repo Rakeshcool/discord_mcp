@@ -6,12 +6,13 @@ use discord_mcp::discord::ids::{ChannelId, GuildId};
 use discord_mcp::error::ErrorCategory;
 use discord_mcp::policy::rules::{Policy, ToolRisk, classify_tool, sanitize_mentions};
 
-const READ_TOOLS: [&str; 8] = [
+const READ_TOOLS: [&str; 9] = [
     "discord_list_guilds",
     "discord_get_guild",
     "discord_list_channels",
     "discord_get_channel",
     "discord_get_messages",
+    "discord_get_user_messages",
     "discord_get_message",
     "discord_list_members",
     "discord_get_member",

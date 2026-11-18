@@ -120,7 +120,7 @@ of the read-only built-in defaults.
 curl -s -X POST http://127.0.0.1:7800/api/servers/discord-mcp/connect
 ```
 
-A healthy answer reports `"status":"connected"` and `"toolCount":32` (the
+A healthy answer reports `"status":"connected"` and `"toolCount":33` (the
 number this build exposes). Connecting is what performs the MCP handshake; the
 entry alone does nothing until then.
 
@@ -164,7 +164,7 @@ node scripts/mcp.mjs down                                        # stops a bridg
 ```
 
 Verified through this bridge against the release build: handshake and `tools/list`
-(32 tools), `discord_get_capabilities`, `discord_list_guilds`,
+(tools/list), `discord_get_capabilities`, `discord_list_guilds`,
 `discord_list_channels`, `discord_get_messages`, and a policy-blocked
 `discord_send_message`. Not verified through it: the `llama-server` chat loop, the
 HTTP transport, and any live mutation.
@@ -180,7 +180,7 @@ HTTP transport, and any live mutation.
 The server answers with its protocol version, `serverInfo` and `instructions`.
 The host then sends `notifications/initialized` and `tools/list`.
 
-`tools/list` returns **32 tools**. Read them before planning anything: the input
+`tools/list` returns **33 tools**. Read them before planning anything: the input
 schemas are strict, IDs are decimal strings, and unknown fields are rejected.
 
 The server instructions state the rule you must follow for the whole session:
@@ -235,6 +235,10 @@ Rules:
   readable — not that the tool is broken.
 - `discord_list_guilds` filters to allowlisted guilds but still returns a
   cursor; a short page does not necessarily mean the end.
+- To find one user's recent messages across a guild, call
+  `discord_get_user_messages` with `guild_id` and `user_id`. It scans the newest
+  `scan_limit` messages (default 100) in each visible text/announcement channel;
+  it is a bounded scan, not Discord search or full history.
 - `discord://guilds` is the resource equivalent of the default guild listing.
 
 ---

@@ -589,6 +589,9 @@ Run these in order; each one isolates a different layer.
    not, the bot was never invited (§2.4).
 4. **Channel reads** — `discord_list_channels` then `discord_get_messages` on a
    channel. Text coming back proves permissions, intent and the model mapping.
+   `discord_get_user_messages` exercises the fan-out path: it should list each
+   visible text channel under `channels`, and a channel without Read Message
+   History should carry an `error` without failing the others.
 5. **Refusals still fail closed** — `guild_id: "abc"` must return
    `INVALID_ARGUMENT`, and a `limit` above `policy.max_messages_per_read` must be
    refused rather than clamped.
