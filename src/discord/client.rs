@@ -1,19 +1,22 @@
 //! The application-owned Discord interface.
 //!
 //! The application layer depends on this trait, never on twilight. That keeps
-//! the adapter replaceable, makes the whole read surface testable without a
-//! network, and is what lets the policy layer (next phase) sit between tool
-//! arguments and real requests.
+//! the adapter replaceable, makes the whole surface testable without a network,
+//! and is what lets the policy layer sit between tool arguments and real
+//! requests.
 //!
-//! One method writes: [`DiscordApi::send_message`]. It is separate from the read
-//! surface on purpose, it is reached only through the policy gate, and it cannot
-//! edit or delete anything.
+//! Mutations are separate from the read surface on purpose. Every one of them
+//! takes `dry_run`: when it is `true` the policy gate answers with
+//! [`MutationOutcome::Planned`] without calling the implementation, so a caller
+//! can validate a destructive intent and see its effect without a request. The
+//! adapter itself always performs the operation; it never sees a `true` value.
 
 use async_trait::async_trait;
 
 use crate::discord::ids::{ChannelId, GuildId, MessageId, UserId};
 use crate::discord::models::{
-    ChannelSummary, GuildDetail, GuildSummary, MemberSummary, MessageQuery, MessageSummary, Page,
+    BotIdentity, ChannelSummary, GuildDetail, GuildPermissions, GuildSummary, MemberSummary,
+    MessageQuery, MessageSummary, Page,
 };
 use crate::error::AppError;
 
@@ -26,7 +29,16 @@ pub const MESSAGES_PAGE_MAX: u16 = 100;
 /// Discord's maximum page size for guild members.
 pub const MEMBERS_PAGE_MAX: u16 = 1000;
 
-/// Read-only Discord operations, expressed in this crate's own types.
+/// What became of a mutation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MutationOutcome<T> {
+    /// The request was made and Discord answered.
+    Applied(T),
+    /// `dry_run` was requested: policy accepted the intent and nothing was sent.
+    Planned,
+}
+
+/// Discord operations, expressed in this crate's own types.
 #[async_trait]
 pub trait DiscordApi: Send + Sync + std::fmt::Debug {
     /// Guilds the bot is a member of, ascending by ID.
@@ -77,6 +89,12 @@ pub trait DiscordApi: Send + Sync + std::fmt::Debug {
         user_id: &UserId,
     ) -> Result<MemberSummary, AppError>;
 
+    /// The bot account behind the token.
+    async fn bot_identity(&self) -> Result<BotIdentity, AppError>;
+
+    /// The bot's guild-level permissions, computed from its roles.
+    async fn guild_permissions(&self, guild_id: &GuildId) -> Result<GuildPermissions, AppError>;
+
     /// Send one message to a channel.
     ///
     /// `content` has already passed policy: it is non-empty, within the configured
@@ -88,4 +106,71 @@ pub trait DiscordApi: Send + Sync + std::fmt::Debug {
         channel_id: &ChannelId,
         content: &str,
     ) -> Result<MessageSummary, AppError>;
+
+    /// Replace a message's content. Mentions are neutralised by policy first.
+    async fn edit_message(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        content: &str,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<MessageSummary>, AppError>;
+
+    /// Delete one message.
+    async fn delete_message(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError>;
+
+    /// Delete between 2 and 100 messages, all younger than two weeks.
+    async fn bulk_delete_messages(
+        &self,
+        channel_id: &ChannelId,
+        message_ids: &[MessageId],
+        dry_run: bool,
+    ) -> Result<MutationOutcome<u64>, AppError>;
+
+    /// Add the bot's reaction to a message.
+    async fn add_reaction(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        emoji: &str,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError>;
+
+    /// Remove the bot's own reaction from a message.
+    async fn remove_reaction(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        emoji: &str,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError>;
+
+    /// Remove every reaction from a message.
+    async fn clear_reactions(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError>;
+
+    /// Pin a message in its channel.
+    async fn pin_message(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError>;
+
+    /// Remove a pin.
+    async fn unpin_message(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError>;
 }

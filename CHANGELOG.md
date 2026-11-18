@@ -3,6 +3,23 @@
 Notable changes to `discord-mcp`, grouped by capability rather than by commit —
 `TASKS.md` is the unit of work in this project.
 
+## Unreleased — server control, slice 1
+
+- **Capability model.** `policy.control_enabled`, `policy.moderation_enabled`
+  and `policy.administrative_enabled` join `write_enabled` as separate opt-ins,
+  each with its own allowlist requirement. `[policy.autonomy]` adds a shared
+  per-minute action budget, a bulk-delete ceiling, bot-role protection and a
+  `require_dry_run` list; `[policy.protected]` reserves role and user IDs.
+  `--read-only` and `DISCORD_MCP_READ_ONLY=1` disable every mutation class at
+  startup without touching the file.
+- **`discord_get_capabilities`.** Reports enabled classes, limits, protected IDs
+  and the bot's guild-level permissions, so a client plans within its rights.
+- **Message mutations.** `discord_edit_message`, `discord_delete_message`,
+  `discord_bulk_delete_messages`, the three reaction tools and the two pin tools.
+  Every mutation takes `dry_run`, is never retried after an ambiguous outcome,
+  and shares the action budget. Bulk delete enforces Discord's 2–100 count and
+  14-day age rules locally, from the snowflake timestamp.
+
 ## v0.1.0 — 2026-11-18
 
 **Published as GitHub release `v0.1.0`.** The tag names the release commit, and

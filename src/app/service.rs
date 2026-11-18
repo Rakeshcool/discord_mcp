@@ -89,6 +89,21 @@ impl AppService {
         } else {
             warnings.push("write tools are disabled".to_string());
         }
+        for (enabled, name) in [
+            (config.policy.control_enabled, "control"),
+            (config.policy.moderation_enabled, "moderation"),
+            (config.policy.administrative_enabled, "administrative"),
+        ] {
+            if enabled {
+                warnings.push(format!("{name} tools are ENABLED"));
+            }
+        }
+        if config.policy.autonomy.max_actions_per_minute < 60 {
+            warnings.push(format!(
+                "mutation budget is {} action(s) per minute",
+                config.policy.autonomy.max_actions_per_minute
+            ));
+        }
         if !config.logging.redact_message_content {
             warnings.push(
                 "message content logging is enabled; Discord message bodies will appear in logs"

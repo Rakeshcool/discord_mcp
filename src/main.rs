@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use discord_mcp::app::service::AppService;
+use discord_mcp::config::Config;
 use discord_mcp::config::load;
 use discord_mcp::error::{AppError, ErrorCategory};
 
@@ -16,17 +17,19 @@ const USAGE: &str = "\
 discord-mcp — secure Discord MCP server (official bot identity only)
 
 USAGE:
-    discord-mcp <COMMAND> [--config <PATH>]
+    discord-mcp <COMMAND> [--config <PATH>] [--read-only]
 
 COMMANDS:
     serve                Run the MCP server over the configured transport
     --validate-config    Validate configuration, report, and exit
+    --read-only          Disable every mutation class, whatever the config says
     --version, -V        Print the version
     --help, -h           Print this help
 
 ENVIRONMENT:
     DISCORD_BOT_TOKEN       Bot token, required by `serve`
     DISCORD_MCP_CONFIG      Path to a TOML configuration file
+    DISCORD_MCP_READ_ONLY   Set to 1 to disable every mutation class
     RUST_LOG                Log filter override
 
 EXIT CODES:
@@ -59,6 +62,9 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode, AppError> {
     let mut command: Option<Command> = None;
     let mut config_path: Option<PathBuf> = None;
+    let mut read_only = std::env::var("DISCORD_MCP_READ_ONLY")
+        .map(|value| matches!(value.trim(), "1" | "true" | "yes"))
+        .unwrap_or(false);
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -67,6 +73,10 @@ fn run() -> Result<ExitCode, AppError> {
             "--validate-config" => Command::ValidateConfig,
             "--version" | "-V" => Command::Version,
             "--help" | "-h" => Command::Help,
+            "--read-only" => {
+                read_only = true;
+                continue;
+            }
             "--config" => {
                 let value = args
                     .next()
@@ -110,7 +120,11 @@ fn run() -> Result<ExitCode, AppError> {
         }
         Command::ValidateConfig => {
             let path = resolve_config_path(config_path);
-            let (config, source) = load::load_with_source(path.as_deref())?;
+            let (mut config, source) = load::load_with_source(path.as_deref())?;
+            if read_only {
+                apply_read_only(&mut config);
+                eprintln!("read-only override: every mutation class is disabled");
+            }
             let report = AppService::validate_only(&config);
             eprintln!("configuration valid (source: {})", source.as_str());
             eprintln!(
@@ -129,7 +143,10 @@ fn run() -> Result<ExitCode, AppError> {
         }
         Command::Serve => {
             let path = resolve_config_path(config_path);
-            let config = load::load(path.as_deref())?;
+            let mut config = load::load(path.as_deref())?;
+            if read_only {
+                apply_read_only(&mut config);
+            }
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
                 .enable_all()
@@ -145,6 +162,18 @@ fn run() -> Result<ExitCode, AppError> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+/// Turn every mutation class off without touching the configuration file.
+///
+/// This is the runtime kill switch: an operator who wants a read-only session
+/// passes `--read-only` or sets `DISCORD_MCP_READ_ONLY=1`, and neither the
+/// configuration nor the allowlists need to change.
+fn apply_read_only(config: &mut Config) {
+    config.policy.write_enabled = false;
+    config.policy.control_enabled = false;
+    config.policy.moderation_enabled = false;
+    config.policy.administrative_enabled = false;
 }
 
 fn resolve_config_path(explicit: Option<PathBuf>) -> Option<PathBuf> {

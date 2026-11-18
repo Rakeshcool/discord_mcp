@@ -385,6 +385,12 @@ fn tools_are_advertised_with_strict_schemas_and_honest_annotations() {
     assert_eq!(
         names,
         vec![
+            "discord_add_reaction",
+            "discord_bulk_delete_messages",
+            "discord_clear_reactions",
+            "discord_delete_message",
+            "discord_edit_message",
+            "discord_get_capabilities",
             "discord_get_channel",
             "discord_get_guild",
             "discord_get_member",
@@ -393,7 +399,10 @@ fn tools_are_advertised_with_strict_schemas_and_honest_annotations() {
             "discord_list_channels",
             "discord_list_guilds",
             "discord_list_members",
+            "discord_pin_message",
+            "discord_remove_reaction",
             "discord_send_message",
+            "discord_unpin_message",
         ]
     );
 
@@ -403,12 +412,73 @@ fn tools_are_advertised_with_strict_schemas_and_honest_annotations() {
             "schema must reject unknown arguments: {tool}"
         );
         let name = tool["name"].as_str().expect("a tool name");
+        let is_read = name.starts_with("discord_get_") || name.starts_with("discord_list_");
         assert_eq!(
-            tool["annotations"]["readOnlyHint"],
-            name != "discord_send_message",
+            tool["annotations"]["readOnlyHint"], is_read,
             "the read-only hint must match what the tool does: {tool}"
         );
     }
+}
+
+#[test]
+fn bulk_delete_is_refused_when_administrative_tools_are_off() {
+    let frames = session(&tool_call(
+        2,
+        "discord_bulk_delete_messages",
+        r#"{"channel_id":"4","message_ids":["1100000000000000001","1100000000000000002"]}"#,
+    ));
+    let responses = run_session(
+        "bulk-off",
+        "[policy]\nwrite_enabled = true\nchannel_allowlist = [\"4\"]\n",
+        &frames,
+    );
+
+    let text = tool_error_text(response_with_id(&responses, 2));
+    assert!(text.starts_with("POLICY_BLOCKED"), "got {text:?}");
+    assert!(text.contains("administrative"), "got {text:?}");
+}
+
+#[test]
+fn delete_is_refused_when_control_tools_are_off() {
+    let frames = session(&tool_call(
+        2,
+        "discord_delete_message",
+        r#"{"channel_id":"4","message_id":"1100000000000000001"}"#,
+    ));
+    let responses = run_session(
+        "delete-off",
+        "[policy]\nwrite_enabled = true\nchannel_allowlist = [\"4\"]\n",
+        &frames,
+    );
+
+    let text = tool_error_text(response_with_id(&responses, 2));
+    assert!(text.starts_with("POLICY_BLOCKED"), "got {text:?}");
+    assert!(text.contains("control"), "got {text:?}");
+}
+
+#[test]
+fn a_dry_run_delete_reports_the_plan_without_a_request() {
+    let frames = session(&tool_call(
+        2,
+        "discord_delete_message",
+        r#"{"channel_id":"4","message_id":"1100000000000000001","dry_run":true}"#,
+    ));
+    let responses = run_session(
+        "dry-run-delete",
+        "[policy]\ncontrol_enabled = true\nchannel_allowlist = [\"4\"]\n",
+        &frames,
+    );
+
+    let result = &response_with_id(&responses, 2)["result"];
+    assert_eq!(result["isError"], false, "{result}");
+    let text = result["content"][0]["text"]
+        .as_str()
+        .expect("a text result");
+    assert!(text.contains("\"dry_run\":true"), "got {text}");
+    assert!(
+        text.contains("discord_delete_message"),
+        "the plan must name the tool: {text}"
+    );
 }
 
 #[test]

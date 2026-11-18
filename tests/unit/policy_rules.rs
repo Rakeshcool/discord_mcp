@@ -47,12 +47,26 @@ fn the_write_tool_is_classified_as_a_write() {
 fn unclassified_tools_are_denied_rather_than_defaulted() {
     let policy = policy(PolicyConfig::default());
 
-    assert_eq!(classify_tool("discord_delete_message"), None);
+    assert_eq!(classify_tool("discord_grid_clear"), None);
     assert_eq!(classify_tool(""), None);
     let error = policy
-        .check_tool("discord_delete_message")
+        .check_tool("discord_grid_clear")
         .expect_err("an unknown tool must not be allowed");
     assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+}
+
+#[test]
+fn destructive_and_administrative_tools_have_their_own_classes() {
+    assert_eq!(
+        classify_tool("discord_delete_message"),
+        Some(ToolRisk::Destructive)
+    );
+    assert_eq!(
+        classify_tool("discord_bulk_delete_messages"),
+        Some(ToolRisk::Administrative)
+    );
+    assert_eq!(ToolRisk::Destructive.as_str(), "destructive");
+    assert_eq!(ToolRisk::Administrative.as_str(), "administrative");
 }
 
 #[test]

@@ -14,18 +14,21 @@
 //! mention neutralisation, applied before the request is built), and every
 //! attempt produces one audit record whatever its outcome.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::Instrument;
 
-use crate::discord::client::DiscordApi;
+use crate::discord::client::{DiscordApi, MutationOutcome};
 use crate::discord::ids::{ChannelId, GuildId, MessageId, UserId};
 use crate::discord::models::{
-    ChannelSummary, GuildDetail, GuildSummary, MemberSummary, MessageQuery, MessageSummary, Page,
+    BotIdentity, ChannelSummary, GuildDetail, GuildPermissions, GuildSummary, MemberSummary,
+    MessageQuery, MessageSummary, Page,
 };
 use crate::error::{AppError, ErrorCategory};
 use crate::policy::audit::{AuditEvent, AuditSink, AuditTarget};
@@ -37,6 +40,10 @@ pub struct PolicyGate {
     policy: Arc<Policy>,
     permits: Arc<Semaphore>,
     audit: Arc<dyn AuditSink>,
+    /// Timestamps of recent mutations, oldest first, for the per-minute budget.
+    /// A deque rather than a counter because the window rolls: an action a minute
+    /// ago must stop counting without a background task to decrement anything.
+    recent_actions: Arc<tokio::sync::Mutex<VecDeque<Instant>>>,
 }
 
 impl PolicyGate {
@@ -50,7 +57,67 @@ impl PolicyGate {
             policy: Arc::new(policy),
             permits,
             audit,
+            recent_actions: Arc::new(tokio::sync::Mutex::new(VecDeque::new())),
         }
+    }
+
+    /// Consume one unit of the shared mutation budget.
+    ///
+    /// The budget is what makes an autonomous loop tolerable: a model that
+    /// decides to clean a channel message by message runs out after
+    /// `max_actions_per_minute` attempts instead of hammering the API.
+    async fn consume_budget(&self, action: &'static str) -> Result<(), AppError> {
+        let mut recent = self.recent_actions.lock().await;
+        let now = Instant::now();
+        while let Some(oldest) = recent.front() {
+            if now.duration_since(*oldest) >= Duration::from_secs(60) {
+                recent.pop_front();
+            } else {
+                break;
+            }
+        }
+        let budget = usize::from(self.policy.action_budget());
+        if recent.len() >= budget {
+            return Err(AppError::policy_blocked(format!(
+                "policy.autonomy.max_actions_per_minute ({budget}) is exhausted; `{action}` was not sent"
+            )));
+        }
+        recent.push_back(now);
+        Ok(())
+    }
+
+    /// The common tail of every mutation: dry-run short-circuit, dry-run policy,
+    /// budget, then the audited request.
+    ///
+    /// A dry run never consumes budget and never records an attempt, because
+    /// nothing was attempted; it still reports the policy decision, which is the
+    /// point of asking.
+    async fn run_mutation<T>(
+        &self,
+        action: &'static str,
+        target: AuditTarget,
+        dry_run: bool,
+        body: impl Future<Output = Result<T, AppError>>,
+    ) -> Result<MutationOutcome<T>, AppError> {
+        if dry_run {
+            self.audit.record(
+                &AuditEvent::allowed(action, target)
+                    .with_correlation(crate::observability::correlation::current()),
+            );
+            return Ok(MutationOutcome::Planned);
+        }
+        if self.policy.requires_dry_run(action) {
+            let error =
+                AppError::policy_blocked(format!("`{action}` must be called with dry_run = true"));
+            self.record_refusal(action, target, &error);
+            return Err(error);
+        }
+        self.consume_budget(action).await.inspect_err(|error| {
+            self.record_refusal(action, target, error);
+        })?;
+        self.run_write(action, target, body)
+            .await
+            .map(MutationOutcome::Applied)
     }
 
     /// The policy being enforced.
@@ -322,6 +389,29 @@ impl DiscordApi for PolicyGate {
         .await
     }
 
+    async fn bot_identity(&self) -> Result<BotIdentity, AppError> {
+        self.run("discord_get_capabilities", AuditTarget::none(), async {
+            self.policy.check_read_enabled()?;
+            let _permit = self.permit().await?;
+            self.inner.bot_identity().await
+        })
+        .await
+    }
+
+    async fn guild_permissions(&self, guild_id: &GuildId) -> Result<GuildPermissions, AppError> {
+        self.run(
+            "discord_get_capabilities",
+            AuditTarget::for_guild(*guild_id),
+            async {
+                self.policy.check_read_enabled()?;
+                self.policy.check_guild(guild_id)?;
+                let _permit = self.permit().await?;
+                self.inner.guild_permissions(guild_id).await
+            },
+        )
+        .await
+    }
+
     async fn send_message(
         &self,
         channel_id: &ChannelId,
@@ -350,4 +440,270 @@ impl DiscordApi for PolicyGate {
         })
         .await
     }
+
+    async fn edit_message(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        content: &str,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<MessageSummary>, AppError> {
+        const ACTION: &str = "discord_edit_message";
+        let target = AuditTarget::for_channel(*channel_id);
+        // An edit passes the same content rules as a send, so it cannot be used
+        // to smuggle in a mention or exceed the length limit.
+        self.policy
+            .check_tool(ACTION)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+        let message = self
+            .policy
+            .prepare_outgoing_message(content)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+        self.policy
+            .check_channel(channel_id)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+
+        self.run_mutation(ACTION, target, dry_run, async {
+            let _permit = self.permit().await?;
+            self.authorize_channel_guild(channel_id).await?;
+            let outcome = self
+                .inner
+                .edit_message(channel_id, message_id, &message.content, false)
+                .await?;
+            applied(outcome)
+        })
+        .await
+    }
+
+    async fn delete_message(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        const ACTION: &str = "discord_delete_message";
+        let target = AuditTarget::for_channel(*channel_id);
+        self.policy
+            .check_tool(ACTION)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+        self.policy
+            .check_channel(channel_id)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+
+        self.run_mutation(ACTION, target, dry_run, async {
+            let _permit = self.permit().await?;
+            self.authorize_channel_guild(channel_id).await?;
+            let outcome = self
+                .inner
+                .delete_message(channel_id, message_id, false)
+                .await?;
+            applied(outcome)
+        })
+        .await
+    }
+
+    async fn bulk_delete_messages(
+        &self,
+        channel_id: &ChannelId,
+        message_ids: &[MessageId],
+        dry_run: bool,
+    ) -> Result<MutationOutcome<u64>, AppError> {
+        const ACTION: &str = "discord_bulk_delete_messages";
+        let target = AuditTarget::for_channel(*channel_id);
+        self.policy
+            .check_tool(ACTION)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+        self.policy
+            .check_channel(channel_id)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+        self.check_bulk_delete(message_ids)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+
+        self.run_mutation(ACTION, target, dry_run, async {
+            let _permit = self.permit().await?;
+            self.authorize_channel_guild(channel_id).await?;
+            let outcome = self
+                .inner
+                .bulk_delete_messages(channel_id, message_ids, false)
+                .await?;
+            applied(outcome)
+        })
+        .await
+    }
+
+    async fn add_reaction(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        emoji: &str,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.reaction_mutation("discord_add_reaction", channel_id, dry_run, async move {
+            applied(
+                self.inner
+                    .add_reaction(channel_id, message_id, emoji, false)
+                    .await?,
+            )
+        })
+        .await
+    }
+
+    async fn remove_reaction(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        emoji: &str,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.reaction_mutation("discord_remove_reaction", channel_id, dry_run, async move {
+            applied(
+                self.inner
+                    .remove_reaction(channel_id, message_id, emoji, false)
+                    .await?,
+            )
+        })
+        .await
+    }
+
+    async fn clear_reactions(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.reaction_mutation("discord_clear_reactions", channel_id, dry_run, async move {
+            applied(
+                self.inner
+                    .clear_reactions(channel_id, message_id, false)
+                    .await?,
+            )
+        })
+        .await
+    }
+
+    async fn pin_message(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.reaction_mutation("discord_pin_message", channel_id, dry_run, async move {
+            applied(
+                self.inner
+                    .pin_message(channel_id, message_id, false)
+                    .await?,
+            )
+        })
+        .await
+    }
+
+    async fn unpin_message(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.reaction_mutation("discord_unpin_message", channel_id, dry_run, async move {
+            applied(
+                self.inner
+                    .unpin_message(channel_id, message_id, false)
+                    .await?,
+            )
+        })
+        .await
+    }
+}
+
+impl PolicyGate {
+    /// Message-scoped mutations share one preamble: write flag, allowlist,
+    /// concurrency permit, guild check when the guild allowlist narrows scope.
+    async fn reaction_mutation(
+        &self,
+        action: &'static str,
+        channel_id: &ChannelId,
+        dry_run: bool,
+        body: impl Future<Output = Result<(), AppError>>,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        let target = AuditTarget::for_channel(*channel_id);
+        self.policy
+            .check_tool(action)
+            .inspect_err(|error| self.record_refusal(action, target, error))?;
+        self.policy
+            .check_channel(channel_id)
+            .inspect_err(|error| self.record_refusal(action, target, error))?;
+
+        self.run_mutation(action, target, dry_run, async {
+            let _permit = self.permit().await?;
+            self.authorize_channel_guild(channel_id).await?;
+            body.await
+        })
+        .await
+    }
+
+    /// Validate a bulk-delete batch before anything is sent.
+    ///
+    /// Discord caps a bulk delete at 100 messages and rejects anything older
+    /// than two weeks, so both rules are checked here from the snowflake
+    /// timestamp: no extra request, and a refusal names the offending message.
+    fn check_bulk_delete(&self, message_ids: &[MessageId]) -> Result<(), AppError> {
+        if message_ids.len() < 2 {
+            return Err(AppError::invalid_argument(
+                "`message_ids` must contain at least 2 messages",
+            ));
+        }
+        let maximum = usize::from(self.policy.max_bulk_delete());
+        if message_ids.len() > maximum {
+            return Err(AppError::invalid_argument(format!(
+                "`message_ids` has {} entries; policy.autonomy.max_bulk_delete is {maximum}",
+                message_ids.len()
+            )));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for id in message_ids {
+            if !seen.insert(id.get()) {
+                return Err(AppError::invalid_argument(format!(
+                    "`message_ids` contains {id} more than once"
+                )));
+            }
+        }
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis() as u64)
+            .unwrap_or(0);
+        for id in message_ids {
+            let created_ms = snowflake_millis(*id);
+            if now_ms.saturating_sub(created_ms) > BULK_DELETE_MAX_AGE_MS {
+                return Err(AppError::invalid_argument(format!(
+                    "message {id} is older than 14 days; Discord refuses to bulk-delete it, delete it individually instead"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Unwrap what the adapter did, treating a planned outcome as a bug.
+///
+/// Only the gate decides a mutation is a dry run; an implementation that
+/// answers `Planned` on its own would mean policy had been skipped, so it is an
+/// internal error rather than something to report as success.
+fn applied<T>(outcome: MutationOutcome<T>) -> Result<T, AppError> {
+    match outcome {
+        MutationOutcome::Applied(value) => Ok(value),
+        MutationOutcome::Planned => Err(AppError::internal(
+            "the Discord adapter reported a planned mutation; only the policy gate may do that",
+        )),
+    }
+}
+
+/// Discord's epoch, in milliseconds (2015-01-01T00:00:00Z).
+const DISCORD_EPOCH_MS: u64 = 1_420_070_400_000;
+
+/// Two weeks, Discord's bulk-delete age ceiling.
+const BULK_DELETE_MAX_AGE_MS: u64 = 14 * 24 * 60 * 60 * 1_000;
+
+/// Creation time encoded in a snowflake: 42 bits of milliseconds since Discord's
+/// epoch, followed by worker and sequence bits.
+fn snowflake_millis(id: MessageId) -> u64 {
+    (id.get() >> 22) + DISCORD_EPOCH_MS
 }

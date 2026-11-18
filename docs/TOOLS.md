@@ -3,9 +3,10 @@
 Every tool this build exposes, with its arguments, its result shape, the policy
 that applies to it and the errors it can return.
 
-This build has **eight read tools and one write tool**, plus one resource. Tools
-are registered unconditionally, so a call that policy refuses comes back as a
-`POLICY_BLOCKED` result rather than a tool that vanishes from `tools/list`.
+This build has **nine read tools, one send tool and eight message mutations**,
+plus one resource. Tools are registered unconditionally, so a call that policy
+refuses comes back as a `POLICY_BLOCKED` result rather than a tool that vanishes
+from `tools/list`.
 
 [`SETUP.md`](SETUP.md) covers installing the server; [`SECURITY.md`](SECURITY.md)
 covers the threat model.
@@ -28,17 +29,28 @@ covers the threat model.
   The only exception is an argument object that does not deserialize (above). The
   message is written by this server, never copied from Discord, and never contains
   a token or a message body.
-- Annotations say what a tool does to the world. The eight read tools carry
-  `readOnlyHint: true`. `discord_send_message` carries `readOnlyHint: false`,
-  `destructiveHint: false`, `idempotentHint: false` and `openWorldHint: true` —
-  it creates a new message each time, which is why it is not idempotent.
+- Annotations say what a tool does to the world. Read tools carry
+  `readOnlyHint: true`. Mutations carry `readOnlyHint: false` and
+  `openWorldHint: true`; `discord_delete_message` and
+  `discord_bulk_delete_messages` also carry `destructiveHint: true`. Only
+  `discord_send_message` is `idempotentHint: false`, because sending twice creates
+  two messages.
+- Mutations accept `dry_run`. A dry run runs every argument and policy check, then
+  returns `{"dry_run":true,"action":"…"}` without sending anything and without
+  consuming the action budget.
 
 ### Policy in front of every tool
 
 | Setting | Effect on tools |
 |---|---|
 | `policy.read_enabled = false` | Every read tool refuses with `POLICY_BLOCKED` |
-| `policy.write_enabled = false` (default) | `discord_send_message` refuses with `POLICY_BLOCKED` |
+| `policy.write_enabled = false` (default) | `discord_send_message`, `discord_edit_message`, the reaction tools and the pin tools refuse with `POLICY_BLOCKED` |
+| `policy.control_enabled = false` (default) | `discord_delete_message` refuses; enabling it requires a channel allowlist |
+| `policy.administrative_enabled = false` (default) | `discord_bulk_delete_messages` refuses; enabling it requires a guild allowlist |
+| `policy.autonomy.max_actions_per_minute` (default 30) | Shared budget across all mutations; the request past it is `POLICY_BLOCKED` and is never sent |
+| `policy.autonomy.max_bulk_delete` (default 50) | Ceiling for one `discord_bulk_delete_messages` call, on top of Discord's 100 and 14-day rules |
+| `policy.autonomy.require_dry_run` | Tools listed here refuse unless called with `dry_run: true` |
+| `policy.protected.role_ids` / `user_ids` | Reserved for the role and moderation packs; parsed and validated now |
 | `policy.guild_allowlist` | When non-empty: guild tools refuse unlisted guilds, channel tools resolve the channel's guild first (one extra request) and refuse it when unlisted, and a direct-message channel is refused because its guild cannot be shown to be allowed |
 | `policy.channel_allowlist` | When non-empty: channel tools refuse unlisted channels. Enabling writes requires it to be non-empty |
 | `policy.max_messages_per_read` | Ceiling for `discord_get_messages.limit` |
@@ -51,6 +63,24 @@ refusing, so a guild allowlist cannot be inferred from the listing.
 ---
 
 ## 2. Read tools
+
+### `discord_get_capabilities`
+
+Reports what this build may do before a client plans a change: which classes
+policy enables, the autonomy limits, the protected IDs, and — when `guild_id` is
+given — the permissions the bot holds in that guild, computed from `@everyone`
+plus its roles.
+
+| Argument | Type | Required | Notes |
+|---|---|---|---|
+| `guild_id` | string | no | Adds `guild_permissions` for that guild |
+
+```json
+{"server":"discord-mcp","version":"0.1.0","bot":{"id":"…","username":"discord-mcp"},"enabled":{"read":true,"write":false,"control":false,"moderation":false,"administrative":false},"limits":{"max_actions_per_minute":30,"max_bulk_delete":50,"protect_bot_role":true,"require_dry_run":[]},"protected":{"role_ids":[],"user_ids":[]}}
+```
+
+`guild_permissions` is guild-level: channel overwrites are not applied, so a
+tool can still be refused by Discord in one channel.
 
 ### `discord_list_guilds`
 
@@ -175,7 +205,33 @@ Returns one object of the shape shown above.
 
 ---
 
-## 3. Write tool
+## 3. Message mutations
+
+All eight take the same policy path: feature flag, channel allowlist, guild check
+when a guild allowlist narrows scope, action budget, one audited attempt. None is
+retried by this server.
+
+| Tool | Arguments | Flag |
+|---|---|---|
+| `discord_edit_message` | `channel_id`, `message_id`, `content`, `dry_run?` | `policy.write_enabled` |
+| `discord_delete_message` | `channel_id`, `message_id`, `dry_run?` | `policy.control_enabled` |
+| `discord_bulk_delete_messages` | `channel_id`, `message_ids`, `dry_run?` | `policy.administrative_enabled` |
+| `discord_add_reaction` | `channel_id`, `message_id`, `emoji`, `dry_run?` | `policy.write_enabled` |
+| `discord_remove_reaction` | `channel_id`, `message_id`, `emoji`, `dry_run?` | `policy.write_enabled` |
+| `discord_clear_reactions` | `channel_id`, `message_id`, `dry_run?` | `policy.write_enabled` |
+| `discord_pin_message` | `channel_id`, `message_id`, `dry_run?` | `policy.write_enabled` |
+| `discord_unpin_message` | `channel_id`, `message_id`, `dry_run?` | `policy.write_enabled` |
+
+`emoji` is `name:id` for a custom emoji or a unicode glyph. Edits pass the same
+content rules as a send, so an edit cannot smuggle a mention past policy.
+
+`discord_bulk_delete_messages` takes 2–`policy.autonomy.max_bulk_delete` distinct
+IDs and refuses any message older than 14 days, computed from the snowflake
+itself (no extra request). Discord would refuse the batch anyway; this reports
+which ID is the problem.
+
+Every mutation returns `{"dry_run":false,"action":"…","result":…}` when it ran,
+and `{"dry_run":true,"action":"…"}` when it was planned.
 
 ### `discord_send_message`
 
@@ -258,6 +314,10 @@ is not, and a client should branch on the code.
   the bucket and resends; the wait, like the request, is bounded by
   `discord.request_timeout_seconds`, so a long limit surfaces as `TIMEOUT`.
 - **Writes** are never retried after an ambiguous outcome (see above).
+- **Mutations share one budget.** `policy.autonomy.max_actions_per_minute`
+  (default 30) counts applied mutations in a rolling minute across every tool; the
+  action past the budget is `POLICY_BLOCKED` and no request is made. Dry runs do
+  not consume it.
 - Each attempt, including a rate-limit wait inside it, is bounded by
   `discord.request_timeout_seconds` (default 20). Over HTTP the whole request is
   additionally bounded by `http.request_timeout_seconds` (default 30), and a
@@ -269,8 +329,8 @@ is not, and a client should branch on the code.
 
 ## 7. What this surface does not do
 
-- No edit, delete, react, pin, thread or bulk-delete tool. Nothing destructive is
-  registered, so there is no tool that needs an approval flow.
+- No thread, channel, role, member, invite, webhook or emoji tool yet; those are
+  the next packs. Message mutations exist, but no tool edits server structure.
 - No gateway connection, event stream or scheduled job: every read is
   request/response.
 - No search endpoint; results carry no embeds, reactions or attachments.
