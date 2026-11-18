@@ -106,6 +106,22 @@ fn non_loopback_binding_requires_authentication() {
 }
 
 #[test]
+fn the_in_flight_cap_is_bounded() {
+    for value in ["0", "1025"] {
+        let message = rejection(&format!("[http]\nmax_in_flight_requests = {value}\n"));
+        assert!(
+            message.contains("http.max_in_flight_requests"),
+            "unexpected message: {message}"
+        );
+    }
+
+    let path = temp_config("[http]\nmax_in_flight_requests = 1\n");
+    let config = load_file(&path).expect("a cap of one must be accepted");
+    std::fs::remove_file(&path).ok();
+    assert_eq!(config.http.max_in_flight_requests, 1);
+}
+
+#[test]
 fn non_loopback_binding_requires_explicit_origins() {
     let message = rejection("[http]\nhost = \"0.0.0.0\"\nallow_non_loopback = true\n");
     assert!(

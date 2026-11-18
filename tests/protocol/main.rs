@@ -586,6 +586,161 @@ fn an_authenticated_initialize_is_served() {
     );
 }
 
+const HTTP_NOTIFICATION: &str = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}";
+const HTTP_TOOLS_LIST: &str = "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/list\"}";
+const UNKNOWN_SESSION: &str = "00000000-0000-0000-0000-000000000000";
+
+/// Initialize and return the session id the server announced.
+fn start_session(server: &HttpServer) -> String {
+    let auth = authorization();
+    let init = http_client::post(
+        &server.address,
+        "/mcp",
+        &[("Authorization", &auth)],
+        INITIALIZE_REQUEST,
+    );
+    assert_eq!(init.status, 200, "body: {}", init.body);
+    init.header("mcp-session-id")
+        .unwrap_or_else(|| panic!("initialize must announce a session id: {:?}", init.headers))
+        .to_string()
+}
+
+#[test]
+fn a_health_probe_is_authenticated_and_reports_status() {
+    let server = start_http_server("http-health", "");
+    let auth = authorization();
+
+    let refused = http_client::get(&server.address, "/health", &[]);
+    assert_eq!(refused.status, 401, "body: {}", refused.body);
+    assert!(
+        !refused.body.contains("\"ok\""),
+        "an unauthenticated probe must learn nothing: {}",
+        refused.body
+    );
+
+    let probe = http_client::get(&server.address, "/health", &[("Authorization", &auth)]);
+    assert_eq!(probe.status, 200, "body: {}", probe.body);
+    let value: Value = serde_json::from_str(&probe.body)
+        .unwrap_or_else(|error| panic!("health must answer JSON ({error}): {}", probe.body));
+    assert_eq!(value["status"], "ok");
+    assert_eq!(value["server"], "discord-mcp");
+    assert_eq!(value["transport"], "http");
+    assert_eq!(
+        value["version"],
+        env!("CARGO_PKG_VERSION"),
+        "the probe must report the running version"
+    );
+    assert!(
+        !probe.body.contains("Discord") && !probe.body.contains("token"),
+        "a probe must not describe the bot or its credentials: {}",
+        probe.body
+    );
+}
+
+#[test]
+fn an_http_session_is_created_acknowledged_and_ended() {
+    let server = start_http_server("http-session-lifecycle", "");
+    let auth = authorization();
+    let sid = start_session(&server);
+
+    let notification = http_client::post(
+        &server.address,
+        "/mcp",
+        &[("Authorization", &auth), ("Mcp-Session-Id", &sid)],
+        HTTP_NOTIFICATION,
+    );
+    assert_eq!(
+        notification.status, 202,
+        "a notification is accepted without an answer: {}",
+        notification.body
+    );
+
+    let list = http_client::post(
+        &server.address,
+        "/mcp",
+        &[("Authorization", &auth), ("Mcp-Session-Id", &sid)],
+        HTTP_TOOLS_LIST,
+    );
+    assert_eq!(list.status, 200, "body: {}", list.body);
+    assert!(
+        list.body.contains("discord_list_guilds") && list.body.contains("discord_get_message"),
+        "the session must serve the read tools: {}",
+        list.body
+    );
+
+    let ended = http_client::delete(
+        &server.address,
+        "/mcp",
+        &[("Authorization", &auth), ("Mcp-Session-Id", &sid)],
+    );
+    assert_eq!(ended.status, 202, "body: {}", ended.body);
+
+    let reused = http_client::post(
+        &server.address,
+        "/mcp",
+        &[("Authorization", &auth), ("Mcp-Session-Id", &sid)],
+        HTTP_TOOLS_LIST,
+    );
+    assert_eq!(
+        reused.status, 404,
+        "a terminated session must not be reusable: {}",
+        reused.body
+    );
+    assert!(
+        reused.body.to_lowercase().contains("session"),
+        "the refusal must say what was missing: {}",
+        reused.body
+    );
+}
+
+#[test]
+fn an_unknown_http_session_is_refused() {
+    let server = start_http_server("http-unknown-session", "");
+    let auth = authorization();
+
+    let response = http_client::post(
+        &server.address,
+        "/mcp",
+        &[
+            ("Authorization", &auth),
+            ("Mcp-Session-Id", UNKNOWN_SESSION),
+        ],
+        HTTP_TOOLS_LIST,
+    );
+
+    assert_eq!(response.status, 404, "body: {}", response.body);
+    assert!(
+        !response.body.contains("tools"),
+        "a request under an unknown session must not be served: {}",
+        response.body
+    );
+}
+
+#[test]
+fn an_http_event_stream_disconnect_leaves_the_server_usable() {
+    let server = start_http_server("http-stream-disconnect", "");
+    let auth = authorization();
+    let sid = start_session(&server);
+
+    let status = http_client::get_headers_then_disconnect(
+        &server.address,
+        "/mcp",
+        &[
+            ("Authorization", &auth),
+            ("Accept", "text/event-stream"),
+            ("Mcp-Session-Id", &sid),
+        ],
+    );
+    assert_eq!(status, 200, "the standalone event stream must open");
+
+    // The socket is gone. A probe on the same session and a brand-new session
+    // must both still work: one aborted stream cannot wedge the listener.
+    let probe = http_client::get(&server.address, "/health", &[("Authorization", &auth)]);
+    assert_eq!(probe.status, 200, "body: {}", probe.body);
+    let fresh = start_session(&server);
+    assert_ne!(fresh, sid, "a new client gets its own session");
+}
+
 #[test]
 fn a_non_loopback_bind_without_its_bearer_token_fails_closed() {
     let path = temp_config(

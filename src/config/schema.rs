@@ -99,6 +99,8 @@ pub struct HttpConfig {
     pub max_request_bytes: usize,
     /// Idle session expiry in seconds.
     pub session_expiry_seconds: u64,
+    /// Non-`GET` requests the listener will handle at once.
+    pub max_in_flight_requests: usize,
     /// Browser origins permitted by `Origin` validation.
     pub allowed_origins: Vec<String>,
 }
@@ -114,6 +116,7 @@ impl Default for HttpConfig {
             request_timeout_seconds: 30,
             max_request_bytes: 1_048_576,
             session_expiry_seconds: 3_600,
+            max_in_flight_requests: 64,
             allowed_origins: Vec::new(),
         }
     }
@@ -270,6 +273,12 @@ impl HttpConfig {
             return Err(ConfigError::invalid(
                 "http.session_expiry_seconds",
                 "must be between 60 and 86400",
+            ));
+        }
+        if !(1..=1_024).contains(&self.max_in_flight_requests) {
+            return Err(ConfigError::invalid(
+                "http.max_in_flight_requests",
+                "must be between 1 and 1024",
             ));
         }
         if self.require_auth && !is_valid_env_name(self.auth_token_env.trim()) {

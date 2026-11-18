@@ -32,12 +32,11 @@ Not implemented yet:
 
 - **Writes (Phase 7).** No tool writes to Discord: no send, edit, delete or
   reaction, and no destructive operation.
-- **HTTP gaps (Phase 6).** No health endpoint and no HTTP-level concurrency cap
-  (Discord calls are already capped by `policy.max_concurrent_requests`). Session
-  resumption, notification delivery and disconnect cleanup are unverified.
-- **Deployment (Phase 6).** TLS termination is not implemented and no
-  reverse-proxy guide exists; put a proxy that terminates TLS in front of a
-  non-loopback bind.
+- **HTTP.** Session resumption (event replay after a reconnect) is unverified;
+  session creation, acknowledgement, termination and disconnect recovery are
+  covered by process tests.
+- **Deployment.** TLS termination is not implemented; a reverse proxy has to
+  terminate it, and `docs/SETUP.md` §7 documents the settings it must use.
 - **Hardening (Phase 8).** No correlation IDs on tool executions, no graceful
   drain of the HTTP listener (STDIO stops when the client closes stdin), and no
   dependency-audit policy.
@@ -150,6 +149,10 @@ response body together; a request that outlives it is answered `504` or has its
 response body cut off, and the long-lived `GET` event stream is exempt because
 that is a session stream rather than a request. `http.session_expiry_seconds` is
 the idle timeout after which a session is closed and its resources released.
+`http.max_in_flight_requests` bounds how many non-`GET` requests are handled at
+once; one beyond the cap is refused with `503` and `Retry-After` rather than
+queued. `GET /health` answers a small JSON status behind the same bearer token,
+contacts nothing, and stays available while the cap is saturated.
 
 Bot creation, intents, permissions, client configuration, verification steps and
 troubleshooting are in [`docs/SETUP.md`](docs/SETUP.md);

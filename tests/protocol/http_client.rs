@@ -33,6 +33,27 @@ pub(crate) fn post(
     headers: &[(&str, &str)],
     body: &str,
 ) -> HttpResponse {
+    request("POST", address, path, headers, Some(body))
+}
+
+/// GET a response that ends on its own (the health probe).
+pub(crate) fn get(address: &str, path: &str, headers: &[(&str, &str)]) -> HttpResponse {
+    request("GET", address, path, headers, None)
+}
+
+/// End a session.
+pub(crate) fn delete(address: &str, path: &str, headers: &[(&str, &str)]) -> HttpResponse {
+    request("DELETE", address, path, headers, None)
+}
+
+/// Send one request and read its whole response.
+pub(crate) fn request(
+    method: &str,
+    address: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: Option<&str>,
+) -> HttpResponse {
     let host = headers
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case("host"))
@@ -45,9 +66,13 @@ pub(crate) fn post(
         .expect("read timeout");
 
     let mut request = format!(
-        "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n",
-        body.len()
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nAccept: application/json, text/event-stream\r\n"
     );
+    if let Some(body) = body {
+        request.push_str("Content-Type: application/json\r\n");
+        request.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
+    request.push_str("Connection: close\r\n");
     for (name, value) in headers {
         if name.eq_ignore_ascii_case("host") {
             continue;
@@ -58,7 +83,9 @@ pub(crate) fn post(
         request.push_str("\r\n");
     }
     request.push_str("\r\n");
-    request.push_str(body);
+    if let Some(body) = body {
+        request.push_str(body);
+    }
 
     stream
         .write_all(request.as_bytes())
@@ -68,6 +95,69 @@ pub(crate) fn post(
     let mut raw = Vec::new();
     stream.read_to_end(&mut raw).expect("read the response");
     parse(&raw)
+}
+
+/// Open a `GET` event stream and drop the connection once the headers arrive.
+///
+/// The body of that stream never ends, so reading it to completion would block
+/// until the read timeout; returning the status and dropping the socket is also
+/// what a crashed client or a closed tab does to the server.
+pub(crate) fn get_headers_then_disconnect(
+    address: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+) -> u16 {
+    let mut stream = TcpStream::connect(address).expect("connect to the test server");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("read timeout");
+
+    let mut request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {address}\r\nAccept: text/event-stream\r\nConnection: close\r\n"
+    );
+    for (name, value) in headers {
+        request.push_str(name);
+        request.push_str(": ");
+        request.push_str(value);
+        request.push_str("\r\n");
+    }
+    request.push_str("\r\n");
+
+    stream
+        .write_all(request.as_bytes())
+        .expect("write the request");
+    stream.flush().ok();
+
+    let mut raw = Vec::new();
+    let mut chunk = [0u8; 256];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                raw.extend_from_slice(&chunk[..read]);
+                if raw.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                break;
+            }
+            Err(error) => panic!("read the response: {error}"),
+        }
+    }
+
+    // Dropping the socket here is the disconnect under test.
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    text.lines()
+        .next()
+        .unwrap_or_default()
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .unwrap_or(0)
 }
 
 /// The `data:` payloads of a `text/event-stream` body, in order.
