@@ -1,6 +1,8 @@
 # Discord MCP Server — Production Specification
 
-**Status:** Implementation specification  
+**Status:** Implementation specification — reflects `feat/server-control` (32
+tools, 23 mutations in three policy classes)
+
 **Target:** Windows 11 x64  
 **Language:** Rust  
 **Transports:** STDIO and MCP Streamable HTTP  
@@ -33,7 +35,7 @@ The server is an adapter between MCP clients and the official Discord API. It mu
 - Automating a human Discord account or controlling the Discord desktop UI.
 - Reading user DMs or acting as a user.
 - Joining voice channels, transmitting audio, recording calls, or managing voice state.
-- Moderation actions that require privileged permissions unless explicitly enabled in configuration.
+- Moderation or administrative actions without a dedicated policy class, allowlist and budget.
 - Arbitrary code execution, arbitrary URL fetching, or unrestricted webhook creation.
 - Multi-tenant hosted SaaS operation.
 - Reimplementing Discord's client or gateway protocol.
@@ -106,11 +108,11 @@ MCP Client
    - Optional Gateway module only if event subscriptions are included in a later release.
 
 5. **Policy layer**
-   - Tool allowlist.
-   - Guild/channel allowlists.
-   - Read/write separation.
-   - Confirmation policy for destructive actions.
-   - Message and attachment size limits.
+   - Tool allowlist and risk class: read, write, destructive (control), administrative.
+   - Guild/channel allowlists, and the class flag that must be true for a tool to run.
+   - Shared rolling action budget and optional `require_dry_run` per tool.
+   - Content limits and mention neutralisation.
+   - One content-free audit record per real attempt.
 
 6. **Configuration and secrets**
    - TOML configuration for non-secret settings.
@@ -159,19 +161,49 @@ The v1 feature set is intentionally narrow and permission-aware.
 | `discord_get_message` | Fetch one message by channel and message ID | Verify channel access |
 | `discord_list_members` | List members where supported | Require necessary intent/API permissions; bounded pagination |
 | `discord_get_member` | Fetch member metadata | Respect visibility and permissions |
+| `discord_get_capabilities` | Report enabled classes, autonomy limits and the authenticated bot | Read-gated like every other read |
 
-### 6.2 Write tools
+### 6.2 Mutation tools
 
-| Tool | Purpose | Default policy |
+Every mutation is off by default. Its class flag must be true, its scope must be
+allowlisted, and every call supports `dry_run` except `discord_send_message`.
+
+| Tools | Class flag | Scope |
 |---|---|---|
-| `discord_send_message` | Send a message to a configured text-capable channel | Disabled until explicitly enabled; require channel allowlist |
-| `discord_edit_own_message` | Edit a message authored by the bot | Disabled by default; own-message check |
-| `discord_delete_own_message` | Delete a message authored by the bot | Disabled by default; explicit confirmation |
-| `discord_add_reaction` | Add a reaction to a message | Disabled by default; channel allowlist |
+| `discord_send_message`, `discord_edit_message`, `discord_add_reaction`, `discord_remove_reaction`, `discord_clear_reactions`, `discord_pin_message`, `discord_unpin_message` | `write_enabled` | channel allowlist |
+| `discord_delete_message`, `discord_create_channel`, `discord_edit_channel`, `discord_delete_channel`, `discord_set_permission_overwrite`, `discord_delete_permission_overwrite`, `discord_create_thread`, `discord_edit_thread`, `discord_create_invite`, `discord_delete_invite` | `control_enabled` | channel allowlist; a created channel's parent must be allowed, a thread is resolved through its parent, an invite through its channel |
+| `discord_bulk_delete_messages`, `discord_create_role`, `discord_edit_role`, `discord_delete_role`, `discord_assign_role`, `discord_remove_role` | `administrative_enabled` | guild allowlist; bulk delete takes 2–`policy.autonomy.max_bulk_delete` distinct IDs younger than 14 days; role tools also need Manage Roles and a role below the bot's highest |
 
-Do not include bulk deletion, mass mentions, mass role changes, bans, kicks, or arbitrary permission overwrites in v1. They substantially increase abuse and accidental-impact risk. If later added, they require dedicated policy controls, explicit confirmation, and audit records.
+Not exposed: bans, kicks, member or nickname management, webhooks, emoji
+management, guild settings, automod, and channel position changes. Mass mentions
+remain impossible: `allow_mass_mentions = true` is rejected by validation and
+outgoing content is neutralised.
 
-### 6.3 Tool schema rules
+### 6.3 Mutation controls
+
+- **Dry run.** Every mutation except `discord_send_message` accepts `dry_run`.
+  It runs every argument and local policy check, returns
+  `{"dry_run":true,"action":"…"}` and sends no request, spends no budget and
+  writes no audit record. It cannot see a missing Discord permission or a
+  hierarchy problem; the first real call is where that `403` appears.
+- **Budget.** `policy.autonomy.max_actions_per_minute` (default 30) is a rolling
+  60-second window shared by the 22 `dry_run`-capable mutations. The action past
+  it is `POLICY_BLOCKED` and is never sent. `discord_send_message` has no dry-run
+  form and is not counted against the budget.
+- **Required dry runs.** `policy.autonomy.require_dry_run` lists tools that refuse
+  a real call; a name that is not a classified tool is a configuration error.
+- **Audit.** Each real attempt produces exactly one content-free record
+  (`allowed`, `denied` or `failed`) with action, target IDs, outcome, category and
+  the correlation id. A dry run produces none.
+- **Role guard.** Editing or deleting the bot's own highest role, or removing it
+  from the bot, is refused locally and unconditionally; no setting disables it.
+  `@everyone` is refused for delete, assign and remove.
+- **No ambiguous retries.** A mutation is attempted once. A `429` is safe to
+  resend because Discord rejected that attempt; a timeout, reset or `5xx` is not.
+- **Session kill switch.** `--read-only` or `DISCORD_MCP_READ_ONLY=1` turns all
+  three mutation classes off without editing the configuration.
+
+### 6.4 Tool schema rules
 
 Every tool must:
 - Have a stable, descriptive name and concise description.
@@ -263,12 +295,20 @@ max_retries = 3
 [policy]
 read_enabled = true
 write_enabled = false
+control_enabled = false
+administrative_enabled = false
 require_confirmation_for_destructive = true
 guild_allowlist = []
 channel_allowlist = []
 max_messages_per_read = 100
 max_message_characters = 2000
 allow_mass_mentions = false
+max_concurrent_requests = 8
+
+[policy.autonomy]
+max_actions_per_minute = 30
+max_bulk_delete = 50
+require_dry_run = []
 
 [logging]
 redact_message_content = true
@@ -291,12 +331,13 @@ Implement defense in depth:
 
 1. **Discord permissions:** Discord remains the final authority. The bot must have the permissions required for each action.
 2. **Server policy:** Local allowlists and read/write toggles.
-3. **Tool policy:** Each tool declares read-only, write, or destructive classification.
-4. **Approval policy:** Destructive tools require an explicit confirmation mechanism supported by the MCP host or are disabled.
-5. **Input policy:** Validate IDs, lengths, ranges, mention behavior, and target guild/channel.
-6. **Audit policy:** Record action name, target IDs, outcome, timestamp, and correlation ID without recording secrets or unnecessary content.
+3. **Tool policy:** Each tool is classified read, write, destructive (control) or administrative, and its class flag must be true.
+4. **Approval policy:** MCP has no confirmation primitive this server can rely on, so the shipped gate is the class flag plus allowlist plus budget plus audit, not a confirmation prompt. The `approval` module is a fail-closed abstraction (`UnavailableApproval` denies everything) and is not in the tool path; no tool claims an approval it did not get.
+5. **Input policy:** Validate IDs, lengths, ranges, mention behavior, target guild/channel, role hierarchy and bulk-delete age/count before any request.
+6. **Audit policy:** Record action name, target IDs, outcome, error category and correlation ID, without secrets or content.
+7. **Budget policy:** Cap real mutations per rolling minute, share the cap across tools, and let dry runs cost nothing.
 
-Do not pretend that an MCP server-side boolean is equivalent to user confirmation. The approval UX must be provided by the host or an explicit operator-controlled policy. If the host cannot provide a trustworthy approval flow, keep the relevant tool disabled.
+Do not pretend that an MCP server-side boolean is equivalent to user confirmation. If a deployment needs human approval, it must come from the host or an operator-controlled policy outside this server; the server's own controls bound blast radius rather than replace consent.
 
 ## 11. Error handling
 
@@ -341,6 +382,9 @@ Return safe, actionable messages. Keep raw diagnostics in redacted logs. Preserv
 - Use structured tracing spans for each MCP request and Discord API operation.
 - Attach a correlation ID to each tool execution.
 - Redact bot tokens and authorization headers unconditionally.
+- Emit one content-free audit record per real mutation attempt (`allowed`,
+  `denied`, `failed`) and per read decision; denials at `info`, failures at
+  `warn`, allowances at `debug`. Nothing is persisted.
 - Default to not logging message content or tool arguments.
 - Offer an opt-in diagnostic mode that still redacts secrets and warns before logging message content.
 - Include health/readiness information for HTTP deployment without exposing secrets.

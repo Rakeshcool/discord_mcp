@@ -4,10 +4,15 @@ End-to-end instructions for installing and using this MCP server: a Discord bot
 application, the build, configuration, both transports, client wiring, and the
 checks that tell you it is actually working.
 
-This build exposes eight read tools, one resource, and one audited write tool.
-`discord_send_message` refuses until writes are enabled (`policy.write_enabled =
-false` by default) and can only post to channels on `policy.channel_allowlist`.
-Nothing can edit, delete, react or bulk-delete.
+This build exposes 32 tools and one resource: nine read tools and 23 mutations
+in three separately gated classes. Every mutation class is off by default.
+`policy.write_enabled` opens send, edit, reactions and pins;
+`policy.control_enabled` opens message deletion, channels, permission overwrites,
+threads and invites; `policy.administrative_enabled` opens bulk delete and the
+role tools. Enabling a class also requires a non-empty allowlist (channels for
+the first two, guilds for the third). Every real mutation is audited, every
+mutation except `discord_send_message` can be planned with `dry_run`, and none is
+retried after an ambiguous outcome.
 
 - Platform: Windows 11 x64 (`x86_64-pc-windows-msvc`). No WSL or Docker.
 - Transports: STDIO (default) and MCP Streamable HTTP (`/mcp`).
@@ -95,13 +100,29 @@ https://discord.com/oauth2/authorize?client_id=<APPLICATION_ID>&scope=bot&permis
 `Administrator` is never required. Local policy can only narrow what the bot may
 do, never widen Discord's own permissions.
 
-The invite above requests only read permissions. Role tools additionally need
-**Manage Roles**: grant it to the bot's role under **Server Settings → Roles**.
-While there, drag the bot's role above every role it must manage — Discord only
-allows a bot to change roles below its own highest role, and a role at or above
-it fails with `403` / code `50013` even when Manage Roles is granted. The role
-tools are enabled separately by `policy.administrative_enabled` and the guild
-allowlist; see [TOOLS.md §5](TOOLS.md#5-role-control).
+The invite above requests only read permissions: **View Channels** and **Read
+Message History**. Each mutation class needs more, granted to the bot's own role
+under **Server Settings → Roles** (or through channel overwrites):
+
+| Tools | Discord permissions |
+|---|---|
+| read tools | View Channels, Read Message History; member tools also need the **Server Members** intent |
+| send / edit a message | Send Messages; Manage Messages to edit a message the bot did not write |
+| delete, bulk delete, clear reactions | Manage Messages |
+| add / remove reactions | Add Reactions |
+| pin / unpin | Pin Messages (`PIN_MESSAGES`); Manage Messages on Discord API behaviour before February 2026 |
+| channels, permission overwrites | Manage Channels, plus Manage Roles to change a role or member overwrite |
+| threads | Create Public Threads or Create Private Threads, Manage Threads, Send Messages in Threads |
+| invites | Create Instant Invite; Manage Channels on that channel (or Manage Guild) to delete |
+| role tools | Manage Roles, and the role below the bot's highest role |
+
+Role tools are enabled separately by `policy.administrative_enabled` and the
+guild allowlist; structure tools by `policy.control_enabled`. See
+[TOOLS.md §4](TOOLS.md#4-channel-thread-and-invite-control) and §5.
+
+While on the Roles page, drag the bot's role above every role it must manage —
+Discord only allows a bot to change roles below its own highest role, and a role
+at or above it fails with `403` / code `50013` even when Manage Roles is granted.
 
 Verify the guild permissions the bot actually holds:
 
@@ -110,9 +131,16 @@ curl.exe -s https://discord.com/api/v10/users/@me/guilds `
   -H "Authorization: Bot $env:DISCORD_BOT_TOKEN"
 ```
 
-Each entry has a `permissions` bitfield; `1024` (View Channels) and `65536`
-(Read Message History) must both be set, and role tools also need `268435456`
-(Manage Roles).
+Each entry has a `permissions` bitfield. The read-only invite sets `1024` (View
+Channels) and `65536` (Read Message History). Add the bits for the classes you
+enable: `2048` Send Messages, `8192` Manage Messages (delete, bulk delete, clear
+reactions, editing another author's message), `64` Add Reactions, `1` Create
+Instant Invite, `16` Manage Channels (channels, overwrites, deleting an invite),
+`268435456` Manage Roles, `17179869184` Manage Threads, `34359738368` Create
+Public Threads, `68719476736` Create Private Threads, `274877906944` Send
+Messages in Threads, and `2251799813685248` Pin Messages on current Discord
+(older API behaviour used Manage Messages). `Administrator` is never required;
+the bot's Discord permissions remain the final authority.
 
 **Intents and permissions are different things.** Permissions decide what the bot
 may do in a server; intents decide what data Discord puts in its responses. Both
@@ -230,7 +258,12 @@ Settings that matter most (see `config/default.toml` for every key):
 
 | Key | Default | Meaning |
 |---|---|---|
-| `policy.write_enabled` | `false` | Turns on `discord_send_message`; requires a channel allowlist |
+| `policy.write_enabled` | `false` | Send, edit, reactions and pins; requires a channel allowlist |
+| `policy.control_enabled` | `false` | Message deletion, channels, overwrites, threads and invites; requires a channel allowlist |
+| `policy.administrative_enabled` | `false` | Bulk delete and the role tools; requires a guild allowlist |
+| `policy.autonomy.max_actions_per_minute` | `30` | Rolling per-minute budget shared by the 22 `dry_run`-capable mutations |
+| `policy.autonomy.max_bulk_delete` | `50` | Largest accepted bulk-delete batch; Discord's own ceiling is 100 |
+| `policy.autonomy.require_dry_run` | `[]` | Tools that refuse a real call unless called with `dry_run: true` |
 | `server.transport` | `stdio` | `stdio`, `http`, or `both` |
 | `policy.read_enabled` | `true` | Turn the read tools on |
 | `policy.guild_allowlist` | `[]` | Empty means every guild the bot can see. List guild IDs to narrow it |
@@ -300,32 +333,53 @@ To use a custom configuration, add `"--config", "D:\\...\\config\\local.toml"` t
 
 ### What the server exposes
 
-Eight read tools, one write tool (`discord_send_message`, refused unless writes
-are enabled) and the `discord://guilds` resource. Argument schemas reject unknown
-fields, and Discord snowflakes are decimal strings, never numbers.
+Thirty-two tools and the `discord://guilds` resource: nine read tools (including
+`discord_get_capabilities`) and 23 mutations split across the three class flags
+above. Argument schemas reject unknown fields, and Discord snowflakes are decimal
+strings, never numbers.
 
 **[`docs/TOOLS.md`](TOOLS.md) is the reference**: every argument, result shape,
 policy precondition and error code.
 
-### Enabling writes
+### Enabling mutations
 
-Writes are off until you say otherwise, and enabling them requires a channel
-allowlist:
+Every mutation class is off until you say otherwise, and enabling one requires an
+allowlist. Writes (send, edit, reactions, pins) and structure (delete, channels,
+overwrites, threads, invites) use the channel allowlist; administration (bulk
+delete, roles) uses the guild allowlist:
 
 ```toml
 [policy]
 write_enabled = true
+control_enabled = true
+administrative_enabled = true
 channel_allowlist = ["1572365820133118035"]   # #general
+guild_allowlist = ["1572365819281932408"]     # test_mcp_server
+
+[policy.autonomy]
+max_actions_per_minute = 30
+max_bulk_delete = 50
+require_dry_run = ["discord_delete_channel"]   # optional
 ```
 
-`discord_send_message` can then post to those channels and no others. Four things
-apply to every send: mentions in the content are neutralised (a zero-width space
-is inserted) and the request carries an empty mention parse list; the body is
-limited by `policy.max_message_characters` in characters; each attempt writes one
-audit record to stderr (`allowed`, `denied` or `failed` with a category); and a
-failed send is never retried, because a retried `POST` may already have created
-the message. A `403` means the bot lacks Send Messages or channel access, and it
-surfaces as `PERMISSION_DENIED` rather than being retried.
+`discord_send_message` can then post to those channels and no others; the other
+mutations act on the same allowlisted scope. What applies to every real attempt:
+mentions in content are neutralised (a zero-width space is inserted) and the
+request carries an empty mention parse list; the body is limited by
+`policy.max_message_characters` in characters; the mutation draws on the shared
+rolling budget (`max_actions_per_minute`) except `discord_send_message`, which has
+no dry-run form; and exactly one audit record is written to stderr (`allowed`,
+`denied` or `failed` with a category). No mutation is retried after an ambiguous
+outcome, because a retried `POST` may already have applied. A `403` means the bot
+lacks the Discord permission (§2.4) or cannot reach the target, and it surfaces
+as `PERMISSION_DENIED` rather than being retried.
+
+Every mutation except `discord_send_message` accepts `dry_run`: it validates
+arguments and local policy, returns `{"dry_run":true,"action":"…"}`, and sends
+nothing — no request, no budget, no audit record. A dry run cannot reveal a
+missing Discord permission or a role-hierarchy problem; the first real call is
+where that `403` appears. `--read-only` (or `DISCORD_MCP_READ_ONLY=1`) turns all
+three classes off for the session without editing the file.
 
 A first call to try — `discord_list_guilds` with no arguments — returns:
 
@@ -527,10 +581,14 @@ Run these in order; each one isolates a different layer.
 5. **Refusals still fail closed** — `guild_id: "abc"` must return
    `INVALID_ARGUMENT`, and a `limit` above `policy.max_messages_per_read` must be
    refused rather than clamped.
-6. **HTTP gate** — with the server running: no token → `401`, wrong token →
+6. **Mutation gates** — with writes and control enabled, `dry_run` on a mutation
+   must return `{"dry_run":true,…}` and leave no audit record; a real call in a
+   channel outside `policy.channel_allowlist` must return `POLICY_BLOCKED`; with
+   the class flag off, the same call must be `POLICY_BLOCKED` before any request.
+7. **HTTP gate** — with the server running: no token → `401`, wrong token →
    `401`, `Host: rebind.example` → `403`, `Origin: https://evil.example` → `403`,
    correct token → `200`.
-7. **Artifact integrity** — if you are checking a packaged build against
+8. **Artifact integrity** — if you are checking a packaged build against
    [`../dist/discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256`](../dist/discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256):
 
    ```powershell
@@ -577,7 +635,10 @@ real binary, but a specific client's launch behaviour is unverified here.
 | Tool result `content: null` for every message | Message Content intent is off | Enable it and confirm the Save dialog (§2.3) |
 | Member tools return a permission error | Server Members intent is off | Enable it in the same section |
 | Tool result `RESOURCE_NOT_FOUND` / `404` | Wrong ID, or the bot cannot see that channel | Re-read `discord_list_channels` |
-| Tool result `POLICY_BLOCKED` | Guild/channel not in the allowlist, or reads disabled | Adjust `policy.*` |
+| Tool result `POLICY_BLOCKED` | Guild/channel not in the allowlist, reads disabled, or the class flag off | Adjust `policy.*` |
+| `POLICY_BLOCKED: … max_actions_per_minute … is exhausted` | More real mutations than the rolling budget allows | Wait out the minute, or raise the budget deliberately |
+| `POLICY_BLOCKED: … must be called with dry_run = true` | The tool is listed in `policy.autonomy.require_dry_run` | Call it with `dry_run: true`, or remove it from the list |
+| `PERMISSION_DENIED` with `50013` on a role tool | Missing Manage Roles, or the role sits at/above the bot's highest role | See §2.4; move the bot's role higher |
 | HTTP `401` | Missing/wrong bearer token | Check `DISCORD_MCP_HTTP_TOKEN` and the client header |
 | HTTP `403` | Foreign `Host` or `Origin` | Call the bind address; add the origin to `allowed_origins` if a browser must reach it |
 | HTTP `400` | Missing `Mcp-Session-Id` on a follow-up request | Reuse the id returned by `initialize` |
@@ -595,10 +656,18 @@ Exit codes: `0` success, `1` internal failure, `2` usage/configuration error,
   config file, client config, screenshot or commit. If you load it from Windows
   Credential Manager through a launcher, it exists only in the server process.
 - The HTTP token is given to MCP clients; the bot token never is.
-- Keep `policy.write_enabled = false` unless you deliberately want
-  `discord_send_message`. With it enabled, `policy.channel_allowlist` must be
-  non-empty and is the only place the tool can post; `policy.allow_mass_mentions`
-  must stay `false` (validation refuses `true`).
+- Keep `write_enabled`, `control_enabled` and `administrative_enabled` at
+  `false` unless you deliberately want those classes. Enabling writes or control
+  requires a non-empty `policy.channel_allowlist`; enabling administration
+  requires a non-empty `policy.guild_allowlist`, and validation refuses the flag
+  without it. `policy.allow_mass_mentions` must stay `false` (validation refuses
+  `true`).
+- Keep `policy.autonomy.max_actions_per_minute` modest; it is the blast-radius
+  cap for an autonomous loop. Use `policy.autonomy.require_dry_run` for the
+  tools whose real call you want a human to plan first.
+- Grant the bot only the Discord permissions for the classes you enable (§2.4),
+  and keep the bot's role above every role it must manage. Its own highest role
+  cannot be edited, deleted or removed from it, by design.
 - Narrow `policy.guild_allowlist` and `policy.channel_allowlist` if the bot is in
   more than one server.
 - Keep the HTTP bind on loopback. For remote access, use a reverse proxy that

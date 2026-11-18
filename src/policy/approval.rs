@@ -1,11 +1,14 @@
 //! Approval for destructive actions.
 //!
-//! Destructive tools do not exist in this build, and no trustworthy approval
-//! channel is available to the process: MCP has no confirmation primitive the
-//! server can rely on, so an approval abstraction that returns `Granted` would be
-//! theatre. The abstraction therefore ships with one implementation,
-//! [`UnavailableApproval`], which denies everything, and destructive actions fail
-//! closed until a real approval channel exists.
+//! No trustworthy approval channel is available to the process: MCP has no
+//! confirmation primitive the server can rely on, so an approval abstraction that
+//! returns `Granted` would be theatre. The abstraction therefore ships with one
+//! implementation, [`UnavailableApproval`], which denies everything.
+//!
+//! It is deliberately **not** wired into the tool path. Destructive and
+//! administrative tools are bounded by their policy class, allowlist, rolling
+//! budget and audit record instead; nothing in the gate claims a confirmation it
+//! did not receive. The module remains the seam for a real approval channel.
 
 use async_trait::async_trait;
 

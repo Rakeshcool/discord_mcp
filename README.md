@@ -81,7 +81,7 @@ lists the variable names.
 
 | Area | Tools | Enabled by |
 |---|---|---|
-| Capabilities | `discord_get_capabilities` | always available |
+| Capabilities | `discord_get_capabilities` | `read_enabled` (default on) |
 | Read | `discord_list_guilds`, `discord_get_guild`, `discord_list_channels`, `discord_get_channel`, `discord_get_messages`, `discord_get_message`, `discord_list_members`, `discord_get_member` | `read_enabled` (default on) |
 | Messages | `discord_send_message`, `discord_edit_message`, `discord_add_reaction`, `discord_remove_reaction`, `discord_clear_reactions`, `discord_pin_message`, `discord_unpin_message` | `write_enabled` |
 | Moderation | `discord_delete_message` | `control_enabled` |
@@ -113,10 +113,11 @@ channel_allowlist = ["1572365820133118035"]
 guild_allowlist = ["1572365819281932408"]
 ```
 
-Every mutation accepts `dry_run`, which returns the planned action without
-contacting Discord and without spending budget. Real mutations share
-`policy.autonomy.max_actions_per_minute`, are audited, and are never retried
-after an ambiguous outcome. `policy.autonomy.require_dry_run` can require the
+Every mutation except `discord_send_message` accepts `dry_run`, which returns the
+planned action without contacting Discord and without spending budget. The
+mutations that accept a dry run share `policy.autonomy.max_actions_per_minute`;
+`discord_send_message` is audited but not counted against it. No mutation is
+retried after an ambiguous outcome. `policy.autonomy.require_dry_run` can require the
 dry-run step for named tools, and `--read-only` (or `DISCORD_MCP_READ_ONLY=1`)
 turns every mutation class off for a session.
 
