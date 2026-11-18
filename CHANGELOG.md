@@ -5,12 +5,12 @@ Notable changes to `discord-mcp`, grouped by capability rather than by commit �
 
 ## v0.1.0 — 2026-11-18
 
-**Tagged `v0.1.0` in this repository; nothing is published.** The tag names the
-first release commit, and
+**Published as GitHub release `v0.1.0`.** The tag names the release commit, and
 `dist/discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256` records the SHA-256 of the
-release executable built from it. The executable itself is neither committed nor
-uploaded, and Phase 10 of `TASKS.md` is the release gate — it has not been signed
-off against a shipped artifact.
+executable built from it. The release attaches `discord-mcp.exe` and that
+checksum file; the executable is an attachment, never a file in the repository.
+Phase 10 of `TASKS.md` is the release gate, signed off against this artifact, and
+GitHub's own asset digest matches the committed hash.
 
 This build reads Discord through an official bot identity and speaks MCP over
 STDIO and Streamable HTTP. Its one write tool posts a message, only to allowlisted
@@ -143,8 +143,9 @@ channels, and only when writes are deliberately enabled.
 
 ### Release packaging
 
-- Annotated tag `v0.1.0` on the release commit; no remote exists, so nothing was
-  pushed.
+- Annotated tag `v0.1.0` on the release commit, pushed to `origin`, with a GitHub
+  release named `discord-mcp v0.1.0` whose assets are `discord-mcp.exe`
+  (11,625,984 bytes) and `discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256`.
 - `dist/discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256` records the SHA-256 of
   the release executable, and the build is byte-reproducible, so the file
   verifies a rebuild instead of identifying one build. `build.rs` passes
@@ -221,5 +222,5 @@ channels, and only when writes are deliberately enabled.
   alternative (`SPEC.md` lists a `keyring`-backed store as optional).
 - Session resumption (event replay after a reconnect) is unverified; creation,
   acknowledgement, termination and disconnect recovery are covered.
-- No published artifact: the tag, the checksum and the clean-checkout build are
-  local to this repository, and the release gate (Phase 10) is unsigned.
+- No installer or MSI: the release attaches a single portable `.exe`, and there
+  is no auto-update path.

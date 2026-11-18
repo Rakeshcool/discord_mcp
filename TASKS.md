@@ -291,7 +291,8 @@ and disconnect recovery; event replay after a reconnect (resumption) is not.
 - [x] Generate SHA-256 checksum.
       `dist/discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256` records the hash of
       the release build from the tagged commit, with the command that regenerates
-      it; `docs/SETUP.md` §8 verifies it. The executable is not committed. The build
+      it; `docs/SETUP.md` §8 verifies it. The executable is not committed — it is
+      attached to the GitHub release instead. The build
       is byte-reproducible — `build.rs` passes `/Brepro` and
       `scripts/build-release.ps1` remaps absolute dependency paths — so the
       checksum verifies a rebuild in the same checkout. A build from another
@@ -303,9 +304,10 @@ and disconnect recovery; event replay after a reconnect (resumption) is not.
       from that tree, so the guide's §3 path needs no uncommitted file. Still one
       machine: the Discord-portal steps and a desktop-client launch were not
       repeated from scratch.
-- [x] Tag first release. Annotated tag `v0.1.0` on the release commit. It is a
-      local tag: the repository has no remote, so nothing was pushed or
-      published.
+- [x] Tag first release. Annotated tag `v0.1.0` on the release commit, pushed to
+      `origin` and published as GitHub release `discord-mcp v0.1.0` with
+      `discord-mcp.exe` and its SHA-256 attached. GitHub's asset digest matches
+      the committed checksum.
 
 **Exit criteria:** A new operator can configure a bot, install the server, connect an MCP client, and use the documented tools safely.
 

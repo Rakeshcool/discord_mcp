@@ -550,7 +550,8 @@ Run these in order; each one isolates a different layer.
    build from an empty `target/`. A build from a **different directory** does not:
    Cargo hashes the package's absolute path into crate metadata, which reorders
    symbols, so verify by rebuilding in the same checkout. The executable itself is
-   not committed.
+   not committed; the build made from this tag is attached to the GitHub release,
+   with the same hash.
 
 A quick scripted STDIO smoke test (PowerShell), which prints the JSON-RPC
 responses and nothing else:
