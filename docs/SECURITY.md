@@ -72,7 +72,8 @@ session, and no database — the process holds nothing beyond the current call.
 - **Every mutation class is off by default.** `write_enabled` (send, edit,
   reactions, pins) and `control_enabled` (message deletion, channels, overwrites,
   threads, invites) each require a non-empty channel allowlist;
-  `administrative_enabled` (bulk delete, roles) requires a non-empty guild
+  `moderation_enabled` (nicknames, kicks, bans, unbans, timeouts) and
+  `administrative_enabled` (bulk delete, roles) require a non-empty guild
   allowlist. Validation refuses a class flag without its allowlist, so a
   half-enabled deployment stops at startup. Parsed `@everyone`/`@here`, role and
   user mentions cannot be enabled at all (`allow_mass_mentions = true` is
@@ -103,12 +104,19 @@ session, and no database — the process holds nothing beyond the current call.
   allowlisted guilds, so a guild allowlist cannot be inferred from the listing.
   The opaque pagination cursor is left untouched so paging still advances.
 - **Risk classification is deny-by-default.** Every tool name is classified as
-  read, write or destructive; an unclassified name is a `POLICY_BLOCKED` denial,
-  never an implicit permission.
+  read, write, destructive, moderation or administrative; an unclassified name
+  is a `POLICY_BLOCKED` denial, never an implicit permission.
 - **Limits are authority limits.** A page size above
   `policy.max_messages_per_read` is an `INVALID_ARGUMENT` error rather than a
   silent truncation, and message bodies are measured in characters against
-  `policy.max_message_characters`.
+  `policy.max_message_characters`. Embed count, total embed text and every
+  embed field are bounded before a send; uploaded files are bounded per file and
+  in total.
+- **File uploads are opt-in and path-scoped.** `policy.attachment_root` is unset
+  by default, which refuses every file upload. When set, tool paths must be
+  relative, are canonicalised against the root and may not resolve outside it;
+  directories and non-regular files are refused. File bytes are read only for the
+  request and are never logged or returned.
 - **Mentions are neutralised, not trusted.** `sanitize_mentions` breaks
   `@everyone`, `@here`, user and role mentions with a zero-width space; the
   write path composes this through `Policy::prepare_outgoing_message`.
@@ -124,25 +132,32 @@ session, and no database — the process holds nothing beyond the current call.
   `AuditEvent` (action, target IDs, outcome, category) through an injectable
   `AuditSink`; the shipping sink logs to stderr, denials at `info`. There is no
   field in which a message body or token could be recorded.
-- **Twenty-three mutations, all off by default.** The tools are registered
+- **Twenty-nine mutations, all off by default.** The tools are registered
   unconditionally so a client can see the capability and why it is refused; the
   gate rejects each while its class flag is false. Argument schemas use
   `deny_unknown_fields`, so an unknown argument is refused rather than ignored,
-  and the read-only hint is truthful per tool: `true` for the nine reads, `false`
+  and the read-only hint is truthful per tool: `true` for the ten reads, `false`
   for every mutation.
-- **An outgoing message is four checks before any request.** Write flag, channel
-  allowlist, character limit and mention neutralisation are decided in policy
-  from local configuration; the content the adapter receives is the neutralised
-  text, and the request also carries an empty mention parse list. The same
-  content rules run for an edit, so an edit cannot smuggle a mention or an
-  oversized body past policy. A policy refusal means the adapter was never
-  called, which the tests assert directly.
+- **Member moderation is bounded and local-first.** Nicknames are 1–32
+  characters, reasons at most 512 characters and free of header-breaking
+  newlines/NUL, ban message deletion is at most 7 days and timeouts at most 28
+  days. The bot refuses to target itself. These checks run before the budget and
+  before any request; Discord's permission and hierarchy checks remain
+  authoritative.
+- **An outgoing message is checked locally before any request.** Write flag,
+  channel allowlist, optional text, embed bounds, file scope/count/bytes and
+  mention neutralisation are decided in policy from local configuration; the
+  content the adapter receives is the neutralised text, and the request also
+  carries an empty mention parse list. The same content rules run for an edit,
+  so an edit cannot smuggle a mention or an oversized body past policy. A policy
+  refusal means the adapter was never called, which the tests assert directly.
 - **Every real mutation attempt leaves exactly one audit record.** `allowed`,
   `denied` (policy refusal) or `failed` (Discord rejected an allowed attempt,
   with its category) — action, target IDs, outcome and correlation id, never the
-  content. Reads record allowances and policy denials; a read that Discord
-  rejects is an error result without a separate audit record. A dry run records
-  nothing, because nothing was attempted.
+  content. Member moderation records the target user ID alongside the guild.
+  Reads record allowances and policy denials; a read that Discord rejects is an
+  error result without a separate audit record. A dry run records nothing,
+  because nothing was attempted.
 - **Mutations are budgeted, and a restart does not reset the budget.**
   `policy.autonomy.max_actions_per_minute` (default 30) is a rolling 60-second
   window shared by every mutation, `discord_send_message` included; the action
@@ -164,8 +179,9 @@ session, and no database — the process holds nothing beyond the current call.
   that `403` appears.
 - **The bot cannot lock itself out.** Editing or deleting the bot's own highest
   role, or removing that role from the bot, is refused locally and
-  unconditionally; there is no setting that disables the guard. `@everyone` is
-  refused for delete, assign and remove. The guard costs no budget but does use
+  unconditionally; there is no setting that disables the guard. Member
+  moderation also refuses to target the bot itself. `@everyone` is refused for
+  delete, assign and remove. The guard costs no budget but does use
   the concurrency cap, and it runs only for a real attempt because it needs
   Discord lookups.
 - **Structure is scoped by resolution.** A new channel's parent must be an

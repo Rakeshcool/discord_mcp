@@ -17,8 +17,9 @@ use discord_mcp::discord::client::MutationOutcome;
 use discord_mcp::discord::ids::{ChannelId, GuildId, MessageId, RoleId, UserId};
 use discord_mcp::discord::models::{
     BotIdentity, ChannelEdit, ChannelKind, ChannelSummary, GuildDetail, GuildSummary,
-    InviteSummary, MemberSummary, MessageAuthor, MessageQuery, MessageSummary, NewChannel,
-    NewInvite, NewRole, NewThread, OverwriteTarget, Page, RoleEdit, RoleSummary,
+    InviteSummary, MemberSummary, MessageAuthor, MessageDraft, MessageQuery, MessageSummary,
+    NewChannel, NewEmbed, NewEmbedField, NewInvite, NewRole, NewThread, OverwriteTarget, Page,
+    RoleEdit, RoleSummary,
 };
 use discord_mcp::discord::permissions::PermissionBits;
 use discord_mcp::error::{AppError, ErrorCategory};
@@ -36,7 +37,7 @@ enum Call {
     GetMessage(u64, u64),
     ListMembers(u64),
     GetMember(u64, u64),
-    SendMessage(u64, String),
+    SendMessage(u64, MessageDraft),
     EditMessage(u64, u64, String),
     DeleteMessage(u64, u64),
     BulkDelete(u64, usize),
@@ -60,6 +61,12 @@ enum Call {
     DeleteRole(u64, u64),
     AssignRole(u64, u64, u64),
     RemoveRole(u64, u64, u64),
+    SetNickname(u64, u64, Option<String>, Option<String>),
+    KickMember(u64, u64, Option<String>),
+    BanMember(u64, u64, u32, Option<String>),
+    UnbanMember(u64, u64, Option<String>),
+    TimeoutMember(u64, u64, u32, Option<String>),
+    ClearMemberTimeout(u64, u64, Option<String>),
     HighestRoleOf(u64, u64),
     BotIdentity,
 }
@@ -216,6 +223,9 @@ fn message_summary(id: u64) -> MessageSummary {
         timestamp: "2024-01-01T00:00:00.000000+00:00".to_string(),
         edited_timestamp: None,
         attachment_count: 0,
+        embeds: Vec::new(),
+        reactions: Vec::new(),
+        attachments: Vec::new(),
     }
 }
 
@@ -324,9 +334,9 @@ impl DiscordApi for FakeDiscord {
     async fn send_message(
         &self,
         channel_id: &ChannelId,
-        content: &str,
+        message: &MessageDraft,
     ) -> Result<MessageSummary, AppError> {
-        self.record(Call::SendMessage(channel_id.get(), content.to_string()))
+        self.record(Call::SendMessage(channel_id.get(), message.clone()))
             .await?;
         Ok(message_summary(100))
     }
@@ -627,6 +637,108 @@ impl DiscordApi for FakeDiscord {
         Ok(MutationOutcome::Applied(()))
     }
 
+    async fn set_member_nickname(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        nickname: Option<&str>,
+        reason: Option<&str>,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.record(Call::SetNickname(
+            guild_id.get(),
+            user_id.get(),
+            nickname.map(ToString::to_string),
+            reason.map(ToString::to_string),
+        ))
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn kick_member(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        reason: Option<&str>,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.record(Call::KickMember(
+            guild_id.get(),
+            user_id.get(),
+            reason.map(ToString::to_string),
+        ))
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn ban_member(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        delete_message_seconds: u32,
+        reason: Option<&str>,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.record(Call::BanMember(
+            guild_id.get(),
+            user_id.get(),
+            delete_message_seconds,
+            reason.map(ToString::to_string),
+        ))
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn unban_member(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        reason: Option<&str>,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.record(Call::UnbanMember(
+            guild_id.get(),
+            user_id.get(),
+            reason.map(ToString::to_string),
+        ))
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn timeout_member(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        duration_seconds: u32,
+        reason: Option<&str>,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.record(Call::TimeoutMember(
+            guild_id.get(),
+            user_id.get(),
+            duration_seconds,
+            reason.map(ToString::to_string),
+        ))
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn clear_member_timeout(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        reason: Option<&str>,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.record(Call::ClearMemberTimeout(
+            guild_id.get(),
+            user_id.get(),
+            reason.map(ToString::to_string),
+        ))
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
     async fn highest_role_of(
         &self,
         guild_id: &GuildId,
@@ -690,6 +802,13 @@ fn channel(id: u64) -> ChannelId {
     ChannelId::from_u64(id)
 }
 
+fn draft(content: &str) -> MessageDraft {
+    MessageDraft {
+        content: Some(content.to_string()),
+        ..MessageDraft::default()
+    }
+}
+
 fn policy(config: PolicyConfig) -> Policy {
     Policy::from_config(&config).expect("the test configuration must produce a policy")
 }
@@ -712,6 +831,16 @@ fn temp_budget_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("discord-mcp-budget-{}-{name}", std::process::id()));
     std::fs::create_dir_all(&directory).expect("create the budget directory");
     directory.join("action-budget.json")
+}
+
+fn temp_attachment_root(name: &str) -> PathBuf {
+    let directory = std::env::temp_dir().join(format!(
+        "discord-mcp-attachments-{}-{name}",
+        std::process::id()
+    ));
+    std::fs::remove_dir_all(&directory).ok();
+    std::fs::create_dir_all(&directory).expect("create the attachment directory");
+    directory
 }
 
 fn remove_budget_file(path: &Path) {
@@ -1094,7 +1223,7 @@ async fn writes_are_refused_by_default_and_the_refusal_is_audited() {
     );
 
     let error = gated
-        .send_message(&channel(4), "hello")
+        .send_message(&channel(4), &draft("hello"))
         .await
         .expect_err("writes are off by default");
 
@@ -1120,7 +1249,7 @@ async fn a_write_to_an_unlisted_channel_is_refused_before_any_call() {
     );
 
     let error = gated
-        .send_message(&channel(5), "hello")
+        .send_message(&channel(5), &draft("hello"))
         .await
         .expect_err("channel 5 is not on the allowlist");
 
@@ -1135,17 +1264,18 @@ async fn an_allowlisted_write_sends_neutralised_content_and_is_audited() {
     let gated = gate(Arc::clone(&fake), write_enabled(&["4"]), Arc::clone(&audit));
 
     let sent = gated
-        .send_message(&channel(4), "@everyone hi <@123>")
+        .send_message(&channel(4), &draft("@everyone hi <@123>"))
         .await
         .expect("an allowlisted channel may be written to");
 
     assert_eq!(sent.id, MessageId::from_u64(100));
     let calls = fake.calls();
     assert_eq!(calls.len(), 1);
-    let Call::SendMessage(target, content) = &calls[0] else {
+    let Call::SendMessage(target, message) = &calls[0] else {
         panic!("expected one send, got {:?}", calls[0]);
     };
     assert_eq!(*target, 4);
+    let content = message.content.as_deref().unwrap_or_default();
     assert!(
         !content.contains("@everyone") && !content.contains("<@"),
         "a mention must not survive to the request: {content:?}"
@@ -1179,11 +1309,11 @@ async fn an_empty_or_oversized_write_is_refused_before_any_call() {
     );
 
     let empty = gated
-        .send_message(&channel(4), "   ")
+        .send_message(&channel(4), &draft("   "))
         .await
         .expect_err("an empty body must be refused");
     let long = gated
-        .send_message(&channel(4), "01234567890")
+        .send_message(&channel(4), &draft("01234567890"))
         .await
         .expect_err("eleven characters exceed the limit of ten");
 
@@ -1198,6 +1328,164 @@ async fn an_empty_or_oversized_write_is_refused_before_any_call() {
 }
 
 #[tokio::test]
+async fn rich_sends_resolve_files_beneath_the_configured_root() {
+    let root = temp_attachment_root("rich-send");
+    std::fs::write(root.join("note.txt"), b"hello file").expect("write the upload");
+    let fake = Arc::new(FakeDiscord::new());
+    let audit = Arc::new(RecordingAudit::default());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(PolicyConfig {
+            write_enabled: true,
+            channel_allowlist: vec!["4".to_string()],
+            attachment_root: Some(root.to_string_lossy().into_owned()),
+            ..PolicyConfig::default()
+        }),
+        Arc::clone(&audit),
+    );
+    let mut message = draft("hello");
+    message.embeds.push(NewEmbed {
+        title: Some("Title".to_string()),
+        fields: vec![NewEmbedField {
+            name: "name".to_string(),
+            value: "value".to_string(),
+            inline: true,
+        }],
+        ..NewEmbed::default()
+    });
+    message.attachment_paths = vec![PathBuf::from("note.txt")];
+    message.reply_to = Some(MessageId::from_u64(9));
+
+    gated
+        .send_message(&channel(4), &message)
+        .await
+        .expect("the rich send must pass policy");
+
+    let calls = fake.calls();
+    let Call::SendMessage(target, sent) = &calls[0] else {
+        panic!("expected one send, got {:?}", calls[0]);
+    };
+    assert_eq!(*target, 4);
+    assert_eq!(sent.embeds.len(), 1);
+    assert_eq!(sent.reply_to, Some(MessageId::from_u64(9)));
+    assert_eq!(sent.attachment_paths.len(), 1);
+    assert_eq!(
+        sent.attachment_paths[0]
+            .file_name()
+            .and_then(|name| name.to_str()),
+        Some("note.txt")
+    );
+    assert!(
+        sent.attachment_paths[0].starts_with(std::fs::canonicalize(&root).expect("canonical root"))
+    );
+    assert_eq!(audit.events()[0].outcome, AuditOutcome::Allowed);
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn embed_and_file_limits_are_refused_before_budget() {
+    let root = temp_attachment_root("rich-limits");
+    std::fs::write(root.join("big.bin"), [0u8, 1]).expect("write the upload");
+    let fake = Arc::new(FakeDiscord::new());
+    let audit = Arc::new(RecordingAudit::default());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(PolicyConfig {
+            write_enabled: true,
+            channel_allowlist: vec!["4".to_string()],
+            max_embeds_per_message: 1,
+            max_embed_characters: 10,
+            max_attachment_bytes: 1,
+            max_attachment_total_bytes: 1,
+            attachment_root: Some(root.to_string_lossy().into_owned()),
+            ..PolicyConfig::default()
+        }),
+        Arc::clone(&audit),
+    );
+    let field = NewEmbedField {
+        name: "name".to_string(),
+        value: "value".to_string(),
+        inline: false,
+    };
+    let first = NewEmbed {
+        title: Some("one".to_string()),
+        ..NewEmbed::default()
+    };
+    let second = NewEmbed {
+        title: Some("two".to_string()),
+        ..NewEmbed::default()
+    };
+    let mut too_many = draft("");
+    too_many.embeds = vec![first.clone(), second.clone()];
+    let mut too_long = draft("");
+    too_long.embeds = vec![NewEmbed {
+        title: Some("01234567890".to_string()),
+        ..NewEmbed::default()
+    }];
+    let mut too_big = draft("");
+    too_big.embeds = vec![first];
+    too_big.attachment_paths = vec![PathBuf::from("big.bin")];
+    let mut field_only = draft("");
+    field_only.embeds = vec![NewEmbed {
+        title: Some("field".to_string()),
+        fields: vec![field],
+        ..NewEmbed::default()
+    }];
+
+    for message in [&too_many, &too_long, &too_big, &field_only] {
+        let error = gated
+            .send_message(&channel(4), message)
+            .await
+            .expect_err("the send must be refused");
+        assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+    }
+    assert!(fake.calls().is_empty(), "policy refused before any request");
+    assert_eq!(audit.events().len(), 4);
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn file_paths_cannot_escape_the_attachment_root() {
+    let root = temp_attachment_root("rich-escape");
+    let fake = Arc::new(FakeDiscord::new());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(PolicyConfig {
+            write_enabled: true,
+            channel_allowlist: vec!["4".to_string()],
+            attachment_root: Some(root.to_string_lossy().into_owned()),
+            ..PolicyConfig::default()
+        }),
+        Arc::new(RecordingAudit::default()),
+    );
+    let absolute = root.join("note.txt");
+    for path in ["../secret.txt", absolute.to_str().expect("utf-8 path")] {
+        let mut message = draft("hello");
+        message.attachment_paths = vec![PathBuf::from(path)];
+        let error = gated
+            .send_message(&channel(4), &message)
+            .await
+            .expect_err("the path must be refused");
+        assert_eq!(error.category(), ErrorCategory::InvalidArgument);
+    }
+    assert!(fake.calls().is_empty());
+
+    let no_root = policy(PolicyConfig {
+        write_enabled: true,
+        channel_allowlist: vec!["4".to_string()],
+        ..PolicyConfig::default()
+    });
+    let error = no_root
+        .resolve_attachment_path(0, "note.txt")
+        .expect_err("file uploads are disabled without a root");
+    assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
 async fn a_permission_failure_on_a_write_is_audited_as_failed() {
     let fake = Arc::new(FakeDiscord::new().failing(AppError::new(
         ErrorCategory::Permission,
@@ -1207,7 +1495,7 @@ async fn a_permission_failure_on_a_write_is_audited_as_failed() {
     let gated = gate(Arc::clone(&fake), write_enabled(&["4"]), Arc::clone(&audit));
 
     let error = gated
-        .send_message(&channel(4), "hello")
+        .send_message(&channel(4), &draft("hello"))
         .await
         .expect_err("Discord refused the send");
 
@@ -1228,7 +1516,7 @@ async fn a_discord_side_invalid_argument_is_a_failure_not_a_policy_denial() {
     let gated = gate(Arc::clone(&fake), write_enabled(&["4"]), Arc::clone(&audit));
 
     let error = gated
-        .send_message(&channel(4), "hello")
+        .send_message(&channel(4), &draft("hello"))
         .await
         .expect_err("Discord rejected the request");
 
@@ -1249,14 +1537,14 @@ async fn a_rate_limited_write_is_returned_unchanged_and_audited() {
     let gated = gate(Arc::clone(&fake), write_enabled(&["4"]), Arc::clone(&audit));
 
     let error = gated
-        .send_message(&channel(4), "hello")
+        .send_message(&channel(4), &draft("hello"))
         .await
         .expect_err("the limiter is exhausted");
 
     assert_eq!(error.category(), ErrorCategory::RateLimited);
     assert_eq!(
         fake.calls(),
-        vec![Call::SendMessage(4, "hello".to_string())],
+        vec![Call::SendMessage(4, draft("hello"))],
         "the gate neither hides nor retries a rate limit"
     );
     assert_eq!(audit.events()[0].outcome, AuditOutcome::Failed);
@@ -1397,11 +1685,11 @@ async fn sends_share_the_action_budget() {
     );
 
     gated
-        .send_message(&channel(4), "first")
+        .send_message(&channel(4), &draft("first"))
         .await
         .expect("the first send is within budget");
     let error = gated
-        .send_message(&channel(4), "second")
+        .send_message(&channel(4), &draft("second"))
         .await
         .expect_err("a send must consume the shared action budget");
     assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
@@ -1431,11 +1719,11 @@ async fn sends_have_their_own_per_channel_budget() {
     );
 
     gated
-        .send_message(&channel(4), "first")
+        .send_message(&channel(4), &draft("first"))
         .await
         .expect("the first send to a channel is allowed");
     let error = gated
-        .send_message(&channel(4), "second")
+        .send_message(&channel(4), &draft("second"))
         .await
         .expect_err("the per-channel send limit must refuse the second send");
     assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
@@ -1444,7 +1732,7 @@ async fn sends_have_their_own_per_channel_budget() {
         "got {error}"
     );
     gated
-        .send_message(&channel(5), "other channel")
+        .send_message(&channel(5), &draft("other channel"))
         .await
         .expect("another channel has its own send budget");
     assert_eq!(fake.calls().len(), 2, "two sends were allowed");
@@ -1473,7 +1761,7 @@ async fn the_rolling_budget_survives_a_restart() {
     )
     .expect("a missing state file starts an empty window");
     first
-        .send_message(&channel(4), "before restart")
+        .send_message(&channel(4), &draft("before restart"))
         .await
         .expect("the first send is within budget");
     drop(first);
@@ -1487,7 +1775,7 @@ async fn the_rolling_budget_survives_a_restart() {
     .expect("the persisted window loads");
 
     let channel_error = second
-        .send_message(&channel(4), "same channel after restart")
+        .send_message(&channel(4), &draft("same channel after restart"))
         .await
         .expect_err("the per-channel window must survive the restart");
     assert_eq!(channel_error.category(), ErrorCategory::PolicyBlocked);
@@ -1499,11 +1787,11 @@ async fn the_rolling_budget_survives_a_restart() {
     );
 
     second
-        .send_message(&channel(5), "another channel")
+        .send_message(&channel(5), &draft("another channel"))
         .await
         .expect("another channel still has its own budget");
     let shared_error = second
-        .send_message(&channel(6), "a third send")
+        .send_message(&channel(6), &draft("a third send"))
         .await
         .expect_err("the shared window must survive the restart");
     assert_eq!(shared_error.category(), ErrorCategory::PolicyBlocked);
@@ -1731,6 +2019,14 @@ fn new_thread_spec() -> NewThread {
 fn administration_config() -> PolicyConfig {
     PolicyConfig {
         administrative_enabled: true,
+        guild_allowlist: vec!["1".to_string()],
+        ..PolicyConfig::default()
+    }
+}
+
+fn moderation_config() -> PolicyConfig {
+    PolicyConfig {
+        moderation_enabled: true,
         guild_allowlist: vec!["1".to_string()],
         ..PolicyConfig::default()
     }
@@ -2671,6 +2967,244 @@ async fn a_role_dry_run_skips_the_bot_role_guard() {
         fake.calls().is_empty(),
         "a dry run must not read the bot's roles: {:?}",
         fake.calls()
+    );
+}
+
+#[tokio::test]
+async fn member_moderation_is_refused_until_moderation_is_enabled() {
+    let fake = Arc::new(FakeDiscord::new());
+    let audit = Arc::new(RecordingAudit::default());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(PolicyConfig::default()),
+        Arc::clone(&audit),
+    );
+
+    let errors = [
+        gated
+            .set_member_nickname(&guild(1), &UserId::from_u64(9), Some("mod"), None, false)
+            .await
+            .expect_err("nickname"),
+        gated
+            .kick_member(&guild(1), &UserId::from_u64(9), None, false)
+            .await
+            .expect_err("kick"),
+        gated
+            .ban_member(&guild(1), &UserId::from_u64(9), 0, None, false)
+            .await
+            .expect_err("ban"),
+        gated
+            .unban_member(&guild(1), &UserId::from_u64(9), None, false)
+            .await
+            .expect_err("unban"),
+        gated
+            .timeout_member(&guild(1), &UserId::from_u64(9), 60, None, false)
+            .await
+            .expect_err("timeout"),
+        gated
+            .clear_member_timeout(&guild(1), &UserId::from_u64(9), None, false)
+            .await
+            .expect_err("clear timeout"),
+    ];
+
+    for error in errors {
+        assert_eq!(error.category(), ErrorCategory::PolicyBlocked, "{error}");
+    }
+    assert!(fake.calls().is_empty(), "no Discord call may be made");
+    assert_eq!(audit.events().len(), 6, "every denial is audited");
+}
+
+#[tokio::test]
+async fn member_moderation_obeys_the_guild_allowlist() {
+    let fake = Arc::new(FakeDiscord::new());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(moderation_config()),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    let error = gated
+        .kick_member(&guild(2), &UserId::from_u64(9), None, false)
+        .await
+        .expect_err("guild 2 is not allowlisted");
+
+    assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+    assert!(fake.calls().is_empty());
+}
+
+#[tokio::test]
+async fn a_disabled_moderation_class_wins_over_an_invalid_argument() {
+    let fake = Arc::new(FakeDiscord::new());
+    let audit = Arc::new(RecordingAudit::default());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(PolicyConfig::default()),
+        Arc::clone(&audit),
+    );
+
+    let error = gated
+        .set_member_nickname(
+            &guild(1),
+            &UserId::from_u64(9),
+            Some(&"x".repeat(33)),
+            None,
+            false,
+        )
+        .await
+        .expect_err("the disabled class must be checked first");
+
+    assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+    assert!(fake.calls().is_empty());
+    assert_eq!(audit.events().len(), 1);
+}
+
+#[tokio::test]
+async fn member_moderation_dry_runs_plan_without_requests_or_audit() {
+    let fake = Arc::new(FakeDiscord::new());
+    let audit = Arc::new(RecordingAudit::default());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(moderation_config()),
+        Arc::clone(&audit),
+    );
+
+    let results = [
+        gated
+            .set_member_nickname(&guild(1), &UserId::from_u64(9), Some(""), None, true)
+            .await,
+        gated
+            .kick_member(&guild(1), &UserId::from_u64(9), None, true)
+            .await,
+        gated
+            .ban_member(&guild(1), &UserId::from_u64(9), 86_400, None, true)
+            .await,
+        gated
+            .unban_member(&guild(1), &UserId::from_u64(9), None, true)
+            .await,
+        gated
+            .timeout_member(&guild(1), &UserId::from_u64(9), 3_600, None, true)
+            .await,
+        gated
+            .clear_member_timeout(&guild(1), &UserId::from_u64(9), None, true)
+            .await,
+    ];
+
+    for result in results {
+        assert_eq!(
+            result.expect("a dry run is a policy decision"),
+            MutationOutcome::Planned
+        );
+    }
+    assert!(fake.calls().is_empty(), "a dry run sends nothing");
+    assert!(audit.events().is_empty(), "a dry run is not audited");
+}
+
+#[tokio::test]
+async fn moderation_cannot_target_the_bot_itself() {
+    let fake = Arc::new(FakeDiscord::new());
+    let audit = Arc::new(RecordingAudit::default());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(moderation_config()),
+        Arc::clone(&audit),
+    );
+
+    let error = gated
+        .kick_member(&guild(1), &UserId::from_u64(99), None, false)
+        .await
+        .expect_err("the bot must not kick itself");
+
+    assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+    assert_eq!(fake.calls(), vec![Call::BotIdentity]);
+    assert_eq!(
+        audit.events(),
+        vec![AuditEvent::denied(
+            "discord_kick_member",
+            AuditTarget::for_member(guild(1), UserId::from_u64(99)),
+            ErrorCategory::PolicyBlocked
+        )]
+    );
+}
+
+#[tokio::test]
+async fn invalid_moderation_inputs_are_refused_before_any_request() {
+    let fake = Arc::new(FakeDiscord::new());
+    let audit = Arc::new(RecordingAudit::default());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(moderation_config()),
+        Arc::clone(&audit),
+    );
+
+    let errors = [
+        gated
+            .set_member_nickname(
+                &guild(1),
+                &UserId::from_u64(9),
+                Some(&"x".repeat(33)),
+                None,
+                false,
+            )
+            .await
+            .expect_err("nickname too long"),
+        gated
+            .kick_member(
+                &guild(1),
+                &UserId::from_u64(9),
+                Some(&"x".repeat(513)),
+                false,
+            )
+            .await
+            .expect_err("reason too long"),
+        gated
+            .ban_member(&guild(1), &UserId::from_u64(9), 604_801, None, false)
+            .await
+            .expect_err("ban deletion window too large"),
+        gated
+            .timeout_member(&guild(1), &UserId::from_u64(9), 0, None, false)
+            .await
+            .expect_err("timeout too short"),
+    ];
+
+    for error in errors {
+        assert_eq!(error.category(), ErrorCategory::InvalidArgument, "{error}");
+    }
+    assert!(
+        fake.calls().is_empty(),
+        "invalid input must not reach Discord"
+    );
+    assert_eq!(audit.events().len(), 4, "each refusal is audited");
+}
+
+#[tokio::test]
+async fn an_allowlisted_moderation_action_is_applied_and_audited() {
+    let fake = Arc::new(FakeDiscord::new());
+    let audit = Arc::new(RecordingAudit::default());
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(moderation_config()),
+        Arc::clone(&audit),
+    );
+
+    let outcome = gated
+        .kick_member(&guild(1), &UserId::from_u64(9), Some("raiding"), false)
+        .await
+        .expect("an allowlisted member may be kicked");
+
+    assert_eq!(outcome, MutationOutcome::Applied(()));
+    assert_eq!(
+        fake.calls(),
+        vec![
+            Call::BotIdentity,
+            Call::KickMember(1, 9, Some("raiding".to_string()))
+        ]
+    );
+    assert_eq!(
+        audit.events(),
+        vec![AuditEvent::allowed(
+            "discord_kick_member",
+            AuditTarget::for_member(guild(1), UserId::from_u64(9))
+        )]
     );
 }
 

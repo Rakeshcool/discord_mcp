@@ -15,25 +15,31 @@
 //! reach this module: the policy gate answers them itself.
 
 use std::future::{Future, IntoFuture};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use twilight_http::Client;
+use twilight_http::request::AuditLogReason;
 use twilight_http::request::channel::reaction::RequestReactionType;
 use twilight_http::response::ResponseFuture;
 use twilight_http::response::marker::ListBody;
 use twilight_model::channel::message::Message;
+use twilight_model::channel::message::embed::{
+    Embed, EmbedField, EmbedFooter, EmbedImage, EmbedThumbnail,
+};
 use twilight_model::channel::thread::AutoArchiveDuration;
 use twilight_model::channel::{Channel, ChannelType};
 use twilight_model::guild::invite::Invite;
 use twilight_model::guild::{Guild, Member, Permissions, Role};
+use twilight_model::http::attachment::Attachment;
 use twilight_model::http::permission_overwrite::{PermissionOverwrite, PermissionOverwriteType};
 use twilight_model::id::Id;
 use twilight_model::id::marker::{
     ChannelMarker, GuildMarker, MessageMarker, RoleMarker, UserMarker,
 };
 use twilight_model::user::{CurrentUser, CurrentUserGuild};
+use twilight_model::util::Timestamp;
 
 use crate::config::schema::{DiscordConfig, is_loopback_host};
 use crate::discord::client::{
@@ -43,7 +49,8 @@ use crate::discord::errors::{map_discord_error, read_body_error};
 use crate::discord::ids::{ChannelId, GuildId, MessageId, RoleId, UserId};
 use crate::discord::models::{
     BotIdentity, ChannelEdit, ChannelKind, ChannelSummary, GuildDetail, GuildSummary,
-    InviteSummary, MemberSummary, MessageAuthor, MessageQuery, MessageSummary, NewChannel,
+    InviteSummary, MemberSummary, MessageAttachment, MessageAuthor, MessageDraft, MessageEmbed,
+    MessageEmbedField, MessageQuery, MessageReaction, MessageSummary, NewChannel, NewEmbed,
     NewInvite, NewRole, NewThread, OverwriteTarget, Page, RoleEdit, RoleSummary,
 };
 use crate::discord::permissions::PermissionBits;
@@ -441,21 +448,54 @@ impl DiscordApi for TwilightDiscord {
     async fn send_message(
         &self,
         channel_id: &ChannelId,
-        content: &str,
+        draft: &MessageDraft,
     ) -> Result<MessageSummary, AppError> {
+        let mut attachments = Vec::with_capacity(draft.attachment_paths.len());
+        for (index, path) in draft.attachment_paths.iter().enumerate() {
+            let filename = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| {
+                    AppError::invalid_argument(format!("file {index} has no usable filename"))
+                })?
+                .to_string();
+            let data = tokio::fs::read(path).await.map_err(|_| {
+                AppError::invalid_argument(format!("file {index} could not be read"))
+            })?;
+            attachments.push(Attachment::from_bytes(
+                filename,
+                data,
+                u64::try_from(index).unwrap_or(0) + 1,
+            ));
+        }
+        let embeds: Vec<Embed> = draft.embeds.iter().map(new_embed).collect();
+
         // Explicit, not implied: no parsed mentions, no role or user mentions,
         // no reply ping. Even though policy has already neutralised the text,
-        // the request says so too. It is borrowed by the builder, so it lives
-        // here rather than inside the closure.
+        // the request says so too. These locals are borrowed by the builder, so
+        // they live outside the closure.
         let allowed_mentions = twilight_model::channel::message::AllowedMentions::default();
+        let content = draft.content.as_deref();
+        let reply_to = draft.reply_to;
         let message: Message = self
             .send_once("discord_send_message", || {
-                read_one(IntoFuture::into_future(
-                    self.client
-                        .create_message(Id::new(channel_id.get()))
-                        .content(content)
-                        .allowed_mentions(Some(&allowed_mentions)),
-                ))
+                let mut request = self
+                    .client
+                    .create_message(Id::new(channel_id.get()))
+                    .allowed_mentions(Some(&allowed_mentions));
+                if let Some(content) = content {
+                    request = request.content(content);
+                }
+                if !embeds.is_empty() {
+                    request = request.embeds(&embeds);
+                }
+                if !attachments.is_empty() {
+                    request = request.attachments(&attachments);
+                }
+                if let Some(reply_to) = reply_to {
+                    request = request.reply(Id::new(reply_to.get()));
+                }
+                read_one(IntoFuture::into_future(request))
             })
             .await?;
 
@@ -932,6 +972,137 @@ impl DiscordApi for TwilightDiscord {
         Ok(MutationOutcome::Applied(()))
     }
 
+    async fn set_member_nickname(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        nickname: Option<&str>,
+        reason: Option<&str>,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        let _member: Member = self
+            .send_once("discord_set_member_nickname", || {
+                let mut request = self
+                    .client
+                    .update_guild_member(Id::new(guild_id.get()), Id::new(user_id.get()))
+                    .nick(nickname);
+                if let Some(reason) = reason {
+                    request = request.reason(reason);
+                }
+                read_one(IntoFuture::into_future(request))
+            })
+            .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn kick_member(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        reason: Option<&str>,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.send_once("discord_kick_member", || {
+            let mut request = self
+                .client
+                .remove_guild_member(Id::new(guild_id.get()), Id::new(user_id.get()));
+            if let Some(reason) = reason {
+                request = request.reason(reason);
+            }
+            read_empty(IntoFuture::into_future(request))
+        })
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn ban_member(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        delete_message_seconds: u32,
+        reason: Option<&str>,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.send_once("discord_ban_member", || {
+            let mut request = self
+                .client
+                .create_ban(Id::new(guild_id.get()), Id::new(user_id.get()))
+                .delete_message_seconds(delete_message_seconds);
+            if let Some(reason) = reason {
+                request = request.reason(reason);
+            }
+            read_empty(IntoFuture::into_future(request))
+        })
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn unban_member(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        reason: Option<&str>,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        self.send_once("discord_unban_member", || {
+            let mut request = self
+                .client
+                .delete_ban(Id::new(guild_id.get()), Id::new(user_id.get()));
+            if let Some(reason) = reason {
+                request = request.reason(reason);
+            }
+            read_empty(IntoFuture::into_future(request))
+        })
+        .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn timeout_member(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        duration_seconds: u32,
+        reason: Option<&str>,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        let until = timeout_until(duration_seconds)?;
+        let _member: Member = self
+            .send_once("discord_timeout_member", || {
+                let mut request = self
+                    .client
+                    .update_guild_member(Id::new(guild_id.get()), Id::new(user_id.get()))
+                    .communication_disabled_until(Some(until));
+                if let Some(reason) = reason {
+                    request = request.reason(reason);
+                }
+                read_one(IntoFuture::into_future(request))
+            })
+            .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
+    async fn clear_member_timeout(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        reason: Option<&str>,
+        _dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        let _member: Member = self
+            .send_once("discord_clear_member_timeout", || {
+                let mut request = self
+                    .client
+                    .update_guild_member(Id::new(guild_id.get()), Id::new(user_id.get()))
+                    .communication_disabled_until(None);
+                if let Some(reason) = reason {
+                    request = request.reason(reason);
+                }
+                read_one(IntoFuture::into_future(request))
+            })
+            .await?;
+        Ok(MutationOutcome::Applied(()))
+    }
+
     async fn highest_role_of(
         &self,
         guild_id: &GuildId,
@@ -957,6 +1128,20 @@ impl DiscordApi for TwilightDiscord {
             .max_by_key(|role| (role.position, role.id.get()))
             .map(|role| role_id(role.id)))
     }
+}
+
+/// Convert a timeout duration into Discord's absolute expiry timestamp.
+fn timeout_until(duration_seconds: u32) -> Result<Timestamp, AppError> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| AppError::internal("the system clock is before the Unix epoch"))?;
+    let seconds = now
+        .as_secs()
+        .checked_add(u64::from(duration_seconds))
+        .and_then(|value| i64::try_from(value).ok())
+        .ok_or_else(|| AppError::invalid_argument("timeout duration is too large"))?;
+    Timestamp::from_secs(seconds)
+        .map_err(|_| AppError::invalid_argument("timeout duration is outside Discord's range"))
 }
 
 /// Turn a tool's emoji argument into a reaction target.
@@ -1101,6 +1286,47 @@ fn channel_summary(channel: Channel) -> ChannelSummary {
 }
 
 fn message_summary(message: Message) -> MessageSummary {
+    let attachment_count = message.attachments.len();
+    let embeds = message
+        .embeds
+        .into_iter()
+        .take(10)
+        .map(message_embed)
+        .collect();
+    let reactions = message
+        .reactions
+        .into_iter()
+        .take(20)
+        .map(|reaction| {
+            let (emoji, emoji_id, animated) = match reaction.emoji {
+                twilight_model::channel::message::EmojiReactionType::Unicode { name } => {
+                    (name, None, false)
+                }
+                twilight_model::channel::message::EmojiReactionType::Custom {
+                    animated,
+                    id,
+                    name,
+                } => (
+                    name.unwrap_or_else(|| id.get().to_string()),
+                    Some(id.get().to_string()),
+                    animated,
+                ),
+            };
+            MessageReaction {
+                emoji,
+                emoji_id,
+                animated,
+                count: reaction.count,
+                me: reaction.me,
+            }
+        })
+        .collect();
+    let attachments = message
+        .attachments
+        .into_iter()
+        .take(10)
+        .map(message_attachment)
+        .collect();
     MessageSummary {
         id: message_id(message.id),
         channel_id: channel_id(message.channel_id),
@@ -1115,7 +1341,111 @@ fn message_summary(message: Message) -> MessageSummary {
         edited_timestamp: message
             .edited_timestamp
             .map(|value| value.iso_8601().to_string()),
-        attachment_count: message.attachments.len(),
+        attachment_count,
+        embeds,
+        reactions,
+        attachments,
+    }
+}
+
+fn message_embed(embed: Embed) -> MessageEmbed {
+    MessageEmbed {
+        kind: truncate_detail(embed.kind, 32),
+        title: embed.title.map(|value| truncate_detail(value, 256)),
+        description: embed.description.map(|value| truncate_detail(value, 4_096)),
+        url: embed.url.map(|value| truncate_detail(value, 2_048)),
+        color: embed.color,
+        fields: embed
+            .fields
+            .into_iter()
+            .take(25)
+            .map(|field| MessageEmbedField {
+                name: truncate_detail(field.name, 256),
+                value: truncate_detail(field.value, 1_024),
+                inline: field.inline,
+            })
+            .collect(),
+        footer: embed
+            .footer
+            .map(|footer| truncate_detail(footer.text, 2_048)),
+        image_url: embed.image.map(|image| truncate_detail(image.url, 2_048)),
+        thumbnail_url: embed
+            .thumbnail
+            .map(|thumbnail| truncate_detail(thumbnail.url, 2_048)),
+    }
+}
+
+fn message_attachment(attachment: twilight_model::channel::Attachment) -> MessageAttachment {
+    MessageAttachment {
+        id: attachment.id.get().to_string(),
+        filename: truncate_detail(attachment.filename, 256),
+        description: attachment
+            .description
+            .map(|value| truncate_detail(value, 1_024)),
+        content_type: attachment
+            .content_type
+            .map(|value| truncate_detail(value, 128)),
+        size: attachment.size,
+        url: truncate_detail(attachment.url, 2_048),
+        proxy_url: truncate_detail(attachment.proxy_url, 2_048),
+        width: attachment.width,
+        height: attachment.height,
+    }
+}
+
+/// Cap a read detail without splitting a character. The ellipsis is part of the
+/// cap, so the result never exceeds `max` characters.
+fn truncate_detail(value: String, max: usize) -> String {
+    if value.chars().count() <= max {
+        return value;
+    }
+    let mut truncated: String = value.chars().take(max.saturating_sub(1)).collect();
+    truncated.push('…');
+    truncated
+}
+
+fn new_embed(embed: &NewEmbed) -> Embed {
+    Embed {
+        author: None,
+        color: embed.color,
+        description: embed.description.clone(),
+        fields: embed
+            .fields
+            .iter()
+            .map(|field| EmbedField {
+                inline: field.inline,
+                name: field.name.clone(),
+                value: field.value.clone(),
+            })
+            .collect(),
+        flags: None,
+        footer: embed.footer.clone().map(|text| EmbedFooter {
+            icon_url: None,
+            proxy_icon_url: None,
+            text,
+        }),
+        image: embed.image_url.clone().map(|url| EmbedImage {
+            content_type: None,
+            flags: None,
+            height: None,
+            placeholder: None,
+            placeholder_version: None,
+            proxy_url: None,
+            url,
+            width: None,
+        }),
+        kind: "rich".to_string(),
+        provider: None,
+        thumbnail: embed.thumbnail_url.clone().map(|url| EmbedThumbnail {
+            height: None,
+            proxy_url: None,
+            url,
+            width: None,
+        }),
+        timestamp: None,
+        title: embed.title.clone(),
+        url: embed.url.clone(),
+        video: None,
     }
 }
 

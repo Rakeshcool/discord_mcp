@@ -28,14 +28,17 @@ use crate::discord::client::{DiscordApi, MutationOutcome};
 use crate::discord::ids::{ChannelId, GuildId, MessageId, RoleId, UserId};
 use crate::discord::models::{
     BotIdentity, ChannelEdit, ChannelSummary, GuildDetail, GuildSummary, InviteSummary,
-    MemberSummary, MessageQuery, MessageSummary, NewChannel, NewInvite, NewRole, NewThread,
-    OverwriteTarget, Page, RoleEdit, RoleSummary,
+    MemberSummary, MessageDraft, MessageQuery, MessageSummary, NewChannel, NewInvite, NewRole,
+    NewThread, OverwriteTarget, Page, RoleEdit, RoleSummary,
 };
 use crate::discord::permissions::PermissionBits;
 use crate::error::{AppError, ErrorCategory};
 use crate::policy::audit::{AuditEvent, AuditSink, AuditTarget};
 use crate::policy::budget::ActionBudget;
-use crate::policy::rules::Policy;
+use crate::policy::rules::{
+    Policy, validate_ban_delete_seconds, validate_member_nickname, validate_moderation_reason,
+    validate_timeout_seconds,
+};
 
 /// A Discord client with policy in front of it.
 pub struct PolicyGate {
@@ -446,33 +449,50 @@ impl DiscordApi for PolicyGate {
     async fn send_message(
         &self,
         channel_id: &ChannelId,
-        content: &str,
+        message: &MessageDraft,
     ) -> Result<MessageSummary, AppError> {
         const ACTION: &str = "discord_send_message";
         let target = AuditTarget::for_channel(*channel_id);
 
         // Policy first, so its refusal is recorded as a denial and anything that
-        // fails later is a failure. The write flag, length limit and mention
-        // neutralisation are one decision; the allowlist is the next.
-        let message = self
+        // fails later is a failure. Text, embeds and file paths are one decision;
+        // the allowlist is the next.
+        let content = self
             .policy
-            .prepare_outgoing_message(content)
+            .prepare_send_content(message.content.as_deref())
             .inspect_err(|error| {
                 self.record_refusal(ACTION, target, error);
             })?;
+        self.policy
+            .check_embeds(&message.embeds)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+        self.policy
+            .check_send_payload(
+                content.as_ref(),
+                &message.embeds,
+                message.attachment_paths.len(),
+            )
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
         self.policy.check_channel(channel_id).inspect_err(|error| {
             self.record_refusal(ACTION, target, error);
         })?;
+        let attachments = self
+            .policy
+            .resolve_attachments(&message.attachment_paths)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
         self.consume_send_budget(channel_id, ACTION)
             .await
             .inspect_err(|error| {
                 self.record_refusal(ACTION, target, error);
             })?;
 
+        let mut prepared = message.clone();
+        prepared.content = content.map(|content| content.content);
+        prepared.attachment_paths = attachments;
         self.run_write(ACTION, target, async {
             let _permit = self.permit().await?;
             self.authorize_channel_guild(channel_id).await?;
-            self.inner.send_message(channel_id, &message.content).await
+            self.inner.send_message(channel_id, &prepared).await
         })
         .await
     }
@@ -976,6 +996,174 @@ impl DiscordApi for PolicyGate {
         .await
     }
 
+    async fn set_member_nickname(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        nickname: Option<&str>,
+        reason: Option<&str>,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        const ACTION: &str = "discord_set_member_nickname";
+        let target = AuditTarget::for_member(*guild_id, *user_id);
+        self.check_member_scope(ACTION, guild_id, user_id)?;
+        let nickname = nickname
+            .map(validate_member_nickname)
+            .transpose()
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?
+            .flatten();
+        let reason = validate_moderation_reason(reason)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+
+        self.member_mutation(ACTION, guild_id, user_id, dry_run, async move {
+            applied(
+                self.inner
+                    .set_member_nickname(
+                        guild_id,
+                        user_id,
+                        nickname.as_deref(),
+                        reason.as_deref(),
+                        false,
+                    )
+                    .await?,
+            )
+        })
+        .await
+    }
+
+    async fn kick_member(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        reason: Option<&str>,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        const ACTION: &str = "discord_kick_member";
+        let target = AuditTarget::for_member(*guild_id, *user_id);
+        self.check_member_scope(ACTION, guild_id, user_id)?;
+        let reason = validate_moderation_reason(reason)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+
+        self.member_mutation(ACTION, guild_id, user_id, dry_run, async move {
+            applied(
+                self.inner
+                    .kick_member(guild_id, user_id, reason.as_deref(), false)
+                    .await?,
+            )
+        })
+        .await
+    }
+
+    async fn ban_member(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        delete_message_seconds: u32,
+        reason: Option<&str>,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        const ACTION: &str = "discord_ban_member";
+        let target = AuditTarget::for_member(*guild_id, *user_id);
+        self.check_member_scope(ACTION, guild_id, user_id)?;
+        validate_ban_delete_seconds(delete_message_seconds)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+        let reason = validate_moderation_reason(reason)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+
+        self.member_mutation(ACTION, guild_id, user_id, dry_run, async move {
+            applied(
+                self.inner
+                    .ban_member(
+                        guild_id,
+                        user_id,
+                        delete_message_seconds,
+                        reason.as_deref(),
+                        false,
+                    )
+                    .await?,
+            )
+        })
+        .await
+    }
+
+    async fn unban_member(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        reason: Option<&str>,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        const ACTION: &str = "discord_unban_member";
+        let target = AuditTarget::for_member(*guild_id, *user_id);
+        self.check_member_scope(ACTION, guild_id, user_id)?;
+        let reason = validate_moderation_reason(reason)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+
+        self.member_mutation(ACTION, guild_id, user_id, dry_run, async move {
+            applied(
+                self.inner
+                    .unban_member(guild_id, user_id, reason.as_deref(), false)
+                    .await?,
+            )
+        })
+        .await
+    }
+
+    async fn timeout_member(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        duration_seconds: u32,
+        reason: Option<&str>,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        const ACTION: &str = "discord_timeout_member";
+        let target = AuditTarget::for_member(*guild_id, *user_id);
+        self.check_member_scope(ACTION, guild_id, user_id)?;
+        validate_timeout_seconds(duration_seconds)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+        let reason = validate_moderation_reason(reason)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+
+        self.member_mutation(ACTION, guild_id, user_id, dry_run, async move {
+            applied(
+                self.inner
+                    .timeout_member(
+                        guild_id,
+                        user_id,
+                        duration_seconds,
+                        reason.as_deref(),
+                        false,
+                    )
+                    .await?,
+            )
+        })
+        .await
+    }
+
+    async fn clear_member_timeout(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        reason: Option<&str>,
+        dry_run: bool,
+    ) -> Result<MutationOutcome<()>, AppError> {
+        const ACTION: &str = "discord_clear_member_timeout";
+        let target = AuditTarget::for_member(*guild_id, *user_id);
+        self.check_member_scope(ACTION, guild_id, user_id)?;
+        let reason = validate_moderation_reason(reason)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+
+        self.member_mutation(ACTION, guild_id, user_id, dry_run, async move {
+            applied(
+                self.inner
+                    .clear_member_timeout(guild_id, user_id, reason.as_deref(), false)
+                    .await?,
+            )
+        })
+        .await
+    }
+
     /// The gate's own role lookup: no tool exposes it, but `DiscordApi` does,
     /// so it honours read policy and guild scope and is audited.
     async fn highest_role_of(
@@ -1063,6 +1251,61 @@ impl PolicyGate {
             body.await
         })
         .await
+    }
+
+    /// Check the moderation flag and guild allowlist before arguments are parsed,
+    /// so a disabled class stays `POLICY_BLOCKED` even for a malformed request.
+    fn check_member_scope(
+        &self,
+        action: &'static str,
+        guild_id: &GuildId,
+        user_id: &UserId,
+    ) -> Result<(), AppError> {
+        let target = AuditTarget::for_member(*guild_id, *user_id);
+        self.policy
+            .check_tool(action)
+            .inspect_err(|error| self.record_refusal(action, target, error))?;
+        self.policy
+            .check_guild(guild_id)
+            .inspect_err(|error| self.record_refusal(action, target, error))?;
+        Ok(())
+    }
+
+    /// Guild-member mutations run after `check_member_scope`: the unconditional
+    /// self-target guard, the budget and the dry-run decision.
+    async fn member_mutation<T>(
+        &self,
+        action: &'static str,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        dry_run: bool,
+        body: impl Future<Output = Result<T, AppError>>,
+    ) -> Result<MutationOutcome<T>, AppError> {
+        let target = AuditTarget::for_member(*guild_id, *user_id);
+        if !dry_run && !self.policy.requires_dry_run(action) {
+            self.authorize_member_target(user_id)
+                .await
+                .inspect_err(|error| self.record_refusal(action, target, error))?;
+        }
+
+        self.run_mutation(action, target, dry_run, async {
+            let _permit = self.permit().await?;
+            body.await
+        })
+        .await
+    }
+
+    /// Refuse a moderation action aimed at the bot itself. Discord would reject
+    /// it too, but a local refusal is clearer and cannot remove the bot's access.
+    async fn authorize_member_target(&self, user_id: &UserId) -> Result<(), AppError> {
+        let _permit = self.permit().await?;
+        let bot_id = self.bot_user_id().await?;
+        if bot_id == *user_id {
+            return Err(AppError::policy_blocked(
+                "moderation cannot target the bot itself",
+            ));
+        }
+        Ok(())
     }
 
     /// Refuse a change or removal aimed at the bot's own highest role.

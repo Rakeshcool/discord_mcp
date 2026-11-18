@@ -413,7 +413,9 @@ fn tools_are_advertised_with_strict_schemas_and_honest_annotations() {
         vec![
             "discord_add_reaction",
             "discord_assign_role",
+            "discord_ban_member",
             "discord_bulk_delete_messages",
+            "discord_clear_member_timeout",
             "discord_clear_reactions",
             "discord_create_channel",
             "discord_create_invite",
@@ -435,6 +437,7 @@ fn tools_are_advertised_with_strict_schemas_and_honest_annotations() {
             "discord_get_message",
             "discord_get_messages",
             "discord_get_user_messages",
+            "discord_kick_member",
             "discord_list_channels",
             "discord_list_guilds",
             "discord_list_members",
@@ -442,7 +445,10 @@ fn tools_are_advertised_with_strict_schemas_and_honest_annotations() {
             "discord_remove_reaction",
             "discord_remove_role",
             "discord_send_message",
+            "discord_set_member_nickname",
             "discord_set_permission_overwrite",
+            "discord_timeout_member",
+            "discord_unban_member",
             "discord_unpin_message",
         ]
     );
@@ -557,6 +563,49 @@ fn role_creation_is_refused_when_administration_is_off() {
     let text = tool_error_text(response_with_id(&responses, 2));
     assert!(text.starts_with("POLICY_BLOCKED"), "got {text:?}");
     assert!(text.contains("administrative"), "got {text:?}");
+}
+
+#[test]
+fn moderation_is_refused_when_moderation_tools_are_off() {
+    let frames = session(&tool_call(
+        2,
+        "discord_kick_member",
+        r#"{"guild_id":"1","user_id":"2"}"#,
+    ));
+    let responses = run_session(
+        "kick-off",
+        "[policy]\nmoderation_enabled = false\n",
+        &frames,
+    );
+
+    let text = tool_error_text(response_with_id(&responses, 2));
+    assert!(text.starts_with("POLICY_BLOCKED"), "got {text:?}");
+    assert!(text.contains("moderation"), "got {text:?}");
+}
+
+#[test]
+fn a_dry_run_timeout_reports_the_plan_without_a_request() {
+    let frames = session(&tool_call(
+        2,
+        "discord_timeout_member",
+        r#"{"guild_id":"1","user_id":"2","duration_seconds":60,"dry_run":true}"#,
+    ));
+    let responses = run_session(
+        "dry-run-timeout",
+        "[policy]\nmoderation_enabled = true\nguild_allowlist = [\"1\"]\n",
+        &frames,
+    );
+
+    let result = &response_with_id(&responses, 2)["result"];
+    assert_eq!(result["isError"], false, "{result}");
+    let text = result["content"][0]["text"]
+        .as_str()
+        .expect("a text result");
+    assert!(text.contains("\"dry_run\":true"), "got {text}");
+    assert!(
+        text.contains("discord_timeout_member"),
+        "the plan must name the tool: {text}"
+    );
 }
 
 #[test]

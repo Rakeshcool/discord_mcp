@@ -89,6 +89,9 @@ fn channel_message_and_member_shapes_serialize() {
         timestamp: "2024-01-01T00:00:00.000000+00:00".to_string(),
         edited_timestamp: None,
         attachment_count: 0,
+        embeds: Vec::new(),
+        reactions: Vec::new(),
+        attachments: Vec::new(),
     };
     let member = MemberSummary {
         user_id: UserId::from_u64(7),

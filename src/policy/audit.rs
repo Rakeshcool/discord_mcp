@@ -7,7 +7,7 @@
 //! The sink is injectable: this build logs records through `tracing`, and tests
 //! collect them instead of scraping stderr.
 
-use crate::discord::ids::{ChannelId, GuildId};
+use crate::discord::ids::{ChannelId, GuildId, UserId};
 use crate::error::ErrorCategory;
 
 /// What policy decided.
@@ -42,6 +42,8 @@ pub struct AuditTarget {
     pub guild: Option<GuildId>,
     /// Channel the operation concerns, when known.
     pub channel: Option<ChannelId>,
+    /// Guild member the operation concerns, when known.
+    pub user: Option<UserId>,
 }
 
 impl AuditTarget {
@@ -50,6 +52,7 @@ impl AuditTarget {
         Self {
             guild: None,
             channel: None,
+            user: None,
         }
     }
 
@@ -58,6 +61,7 @@ impl AuditTarget {
         Self {
             guild: Some(guild),
             channel: None,
+            user: None,
         }
     }
 
@@ -66,6 +70,16 @@ impl AuditTarget {
         Self {
             guild: None,
             channel: Some(channel),
+            user: None,
+        }
+    }
+
+    /// A guild-member-scoped operation.
+    pub const fn for_member(guild: GuildId, user: UserId) -> Self {
+        Self {
+            guild: Some(guild),
+            channel: None,
+            user: Some(user),
         }
     }
 }
@@ -151,6 +165,7 @@ impl AuditSink for LoggingAudit {
                 correlation = ?event.correlation,
                 guild = ?event.target.guild,
                 channel = ?event.target.channel,
+                user = ?event.target.user,
                 "policy allowed a Discord operation"
             ),
             AuditOutcome::Denied => tracing::info!(
@@ -159,6 +174,7 @@ impl AuditSink for LoggingAudit {
                 correlation = ?event.correlation,
                 guild = ?event.target.guild,
                 channel = ?event.target.channel,
+                user = ?event.target.user,
                 code = ?event.reason.map(ErrorCategory::code),
                 "policy denied a Discord operation"
             ),
@@ -168,6 +184,7 @@ impl AuditSink for LoggingAudit {
                 correlation = ?event.correlation,
                 guild = ?event.target.guild,
                 channel = ?event.target.channel,
+                user = ?event.target.user,
                 code = ?event.reason.map(ErrorCategory::code),
                 "an allowed Discord operation failed"
             ),

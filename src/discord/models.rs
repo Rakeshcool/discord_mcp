@@ -5,6 +5,8 @@
 //! ripple into the MCP layer, and the fields exposed here are deliberately a
 //! subset: only what a tool result needs.
 
+use std::path::PathBuf;
+
 use serde::Serialize;
 
 use crate::discord::ids::{ChannelId, GuildId, MessageId, RoleId, UserId};
@@ -175,6 +177,78 @@ pub struct MessageAuthor {
     pub bot: bool,
 }
 
+/// One field inside a rich embed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MessageEmbedField {
+    /// Field label.
+    pub name: String,
+    /// Field body.
+    pub value: String,
+    /// Whether Discord may lay this field out beside another.
+    pub inline: bool,
+}
+
+/// A rich embed attached to a message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MessageEmbed {
+    /// Discord embed type, normally `rich`.
+    pub kind: String,
+    /// Title, when set.
+    pub title: Option<String>,
+    /// Description, when set.
+    pub description: Option<String>,
+    /// Title link, when set.
+    pub url: Option<String>,
+    /// RGB colour, when set.
+    pub color: Option<u32>,
+    /// Bounded field list.
+    pub fields: Vec<MessageEmbedField>,
+    /// Footer text, when set.
+    pub footer: Option<String>,
+    /// Large image URL, when set.
+    pub image_url: Option<String>,
+    /// Thumbnail URL, when set.
+    pub thumbnail_url: Option<String>,
+}
+
+/// One reaction summary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MessageReaction {
+    /// Unicode glyph or custom emoji name.
+    pub emoji: String,
+    /// Custom emoji ID, for `name:id`-style reuse.
+    pub emoji_id: Option<String>,
+    /// Whether a custom emoji is animated.
+    pub animated: bool,
+    /// Number of users who reacted.
+    pub count: u64,
+    /// Whether the bot itself reacted.
+    pub me: bool,
+}
+
+/// One attachment summary. File contents are never returned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MessageAttachment {
+    /// Attachment ID, as a decimal string.
+    pub id: String,
+    /// Original filename.
+    pub filename: String,
+    /// Author-provided description, when set.
+    pub description: Option<String>,
+    /// MIME type, when Discord reports one.
+    pub content_type: Option<String>,
+    /// Size in bytes.
+    pub size: u64,
+    /// Download URL.
+    pub url: String,
+    /// Discord proxy URL.
+    pub proxy_url: String,
+    /// Image or video width, when known.
+    pub width: Option<u64>,
+    /// Image or video height, when known.
+    pub height: Option<u64>,
+}
+
 /// One message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MessageSummary {
@@ -195,8 +269,64 @@ pub struct MessageSummary {
     pub timestamp: String,
     /// Last edit timestamp, ISO 8601, when edited.
     pub edited_timestamp: Option<String>,
-    /// Number of attachments. Attachment details are not exposed.
+    /// Number of attachments on the message, including any omitted from
+    /// `attachments` by the read bound.
     pub attachment_count: usize,
+    /// Bounded rich embeds.
+    pub embeds: Vec<MessageEmbed>,
+    /// Bounded reaction summaries.
+    pub reactions: Vec<MessageReaction>,
+    /// Bounded attachment summaries.
+    pub attachments: Vec<MessageAttachment>,
+}
+
+/// One field in an outgoing embed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NewEmbedField {
+    /// Field label.
+    pub name: String,
+    /// Field body.
+    pub value: String,
+    /// Whether Discord may lay this field out beside another.
+    pub inline: bool,
+}
+
+/// A rich embed to send.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NewEmbed {
+    /// Title, when set.
+    pub title: Option<String>,
+    /// Description, when set.
+    pub description: Option<String>,
+    /// Title link, when set.
+    pub url: Option<String>,
+    /// RGB colour, when set.
+    pub color: Option<u32>,
+    /// Fields, in display order.
+    pub fields: Vec<NewEmbedField>,
+    /// Footer text, when set.
+    pub footer: Option<String>,
+    /// Large image URL, when set.
+    pub image_url: Option<String>,
+    /// Thumbnail URL, when set.
+    pub thumbnail_url: Option<String>,
+}
+
+/// A message this server intends to send.
+///
+/// `attachment_paths` are untrusted tool input until the policy gate resolves
+/// them beneath `policy.attachment_root`; only canonical, bounded paths reach the
+/// adapter.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MessageDraft {
+    /// Message text. The gate neutralises mentions before the adapter sees it.
+    pub content: Option<String>,
+    /// Rich embeds. The gate bounds them before the adapter sees them.
+    pub embeds: Vec<NewEmbed>,
+    /// Files to upload, relative to `policy.attachment_root`.
+    pub attachment_paths: Vec<PathBuf>,
+    /// Message this send replies to, when set.
+    pub reply_to: Option<MessageId>,
 }
 
 /// One guild member.

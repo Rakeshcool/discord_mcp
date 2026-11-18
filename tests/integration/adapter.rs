@@ -14,8 +14,8 @@ use discord_mcp::discord::adapter::TwilightDiscord;
 use discord_mcp::discord::client::{MEMBERS_PAGE_MAX, MutationOutcome};
 use discord_mcp::discord::ids::{ChannelId, GuildId, MessageId, RoleId, UserId};
 use discord_mcp::discord::models::{
-    ChannelEdit, ChannelKind, MessageQuery, NewChannel, NewInvite, NewRole, NewThread,
-    OverwriteTarget, RoleEdit,
+    ChannelEdit, ChannelKind, MessageDraft, MessageQuery, NewChannel, NewEmbed, NewEmbedField,
+    NewInvite, NewRole, NewThread, OverwriteTarget, RoleEdit,
 };
 use discord_mcp::discord::permissions::{PermissionBits, resolve};
 use discord_mcp::error::ErrorCategory;
@@ -50,6 +50,13 @@ fn guild(id: &str) -> GuildId {
 
 fn channel(id: &str) -> ChannelId {
     ChannelId::parse(id).expect("valid channel id")
+}
+
+fn draft(content: &str) -> MessageDraft {
+    MessageDraft {
+        content: Some(content.to_string()),
+        ..MessageDraft::default()
+    }
 }
 
 fn guild_page() -> &'static str {
@@ -102,6 +109,85 @@ fn message(id: &str, content: &str) -> String {
             "author":{{"id":"7007","username":"alice","discriminator":"0","bot":false,"avatar":null,"global_name":null,"public_flags":0}},
             "attachments":[],"mentions":[],"mention_roles":[],"mention_everyone":false,
             "pinned":false,"tts":false,"type":0,"embeds":[],"components":[],"flags":0}}"#
+    )
+}
+
+fn rich_message() -> String {
+    format!(
+        r#"{{"id":"100","channel_id":"{CHANNEL_ID}","guild_id":"{GUILD_ID}",
+            "content":"hello","timestamp":"2024-01-01T00:00:00.000000+00:00",
+            "edited_timestamp":null,
+            "author":{{"id":"7007","username":"alice","discriminator":"0","bot":false,"avatar":null,"global_name":null,"public_flags":0}},
+            "attachments":[{{"id":"555","filename":"note.txt","description":"alt text",
+                "content_type":"text/plain","size":9,"url":"https://cdn.test/note.txt",
+                "proxy_url":"https://media.test/note.txt","height":null,"width":null,
+                "ephemeral":false}}],
+            "mentions":[],"mention_roles":[],"mention_everyone":false,
+            "pinned":false,"tts":false,"type":0,
+            "embeds":[{{"type":"rich","title":"Title","description":"Description",
+                "url":"https://example.test/title","color":16711680,
+                "fields":[{{"name":"Field","value":"Value","inline":true}}],
+                "footer":{{"text":"Footer"}},
+                "image":{{"url":"https://example.test/image.png"}},
+                "thumbnail":{{"url":"https://example.test/thumb.png"}}}}],
+            "reactions":[{{"count":3,"me":true,
+                "emoji":{{"id":"123","name":"party","animated":true}},
+                "burst_colors":[],"count_details":{{"burst":0,"normal":3}},
+                "me_burst":false}}],
+            "components":[],"flags":0}}"#
+    )
+}
+
+fn temp_upload(name: &str, contents: &[u8]) -> std::path::PathBuf {
+    let directory =
+        std::env::temp_dir().join(format!("discord-mcp-adapter-{}-{name}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("create the upload directory");
+    let path = directory.join("note.txt");
+    std::fs::write(&path, contents).expect("write the upload");
+    path
+}
+
+fn many_details_message() -> String {
+    let embeds = (0..11)
+        .map(|index| {
+            let title = if index == 0 {
+                "x".repeat(300)
+            } else {
+                format!("Title {index}")
+            };
+            format!(r#"{{"type":"rich","title":"{title}"}}"#)
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let reactions = (0..21)
+        .map(|index| {
+            format!(
+                r#"{{"count":1,"me":false,"emoji":{{"name":"e{index}"}},
+                    "burst_colors":[],"count_details":{{"burst":0,"normal":1}},
+                    "me_burst":false}}"#
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let attachments = (0..11)
+        .map(|index| {
+            format!(
+                r#"{{"id":"{}","filename":"f{index}.txt","size":1,
+                    "url":"https://cdn.test/{index}",
+                    "proxy_url":"https://media.test/{index}","ephemeral":false}}"#,
+                500 + index
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        r#"{{"id":"100","channel_id":"{CHANNEL_ID}","guild_id":"{GUILD_ID}",
+            "content":"hello","timestamp":"2024-01-01T00:00:00.000000+00:00",
+            "edited_timestamp":null,
+            "author":{{"id":"7007","username":"alice","discriminator":"0","bot":false,"avatar":null,"global_name":null,"public_flags":0}},
+            "attachments":[{attachments}],"mentions":[],"mention_roles":[],
+            "mention_everyone":false,"pinned":false,"tts":false,"type":0,
+            "embeds":[{embeds}],"reactions":[{reactions}],"components":[],"flags":0}}"#
     )
 }
 
@@ -547,7 +633,7 @@ async fn a_sent_message_posts_once_with_mentions_disabled() {
     let api = adapter_for(&mock);
 
     let sent = api
-        .send_message(&channel(CHANNEL_ID), "hello")
+        .send_message(&channel(CHANNEL_ID), &draft("hello"))
         .await
         .expect("the message is created");
 
@@ -575,7 +661,7 @@ async fn a_forbidden_send_maps_to_permission_denied_without_a_retry() {
     let api = adapter_for(&mock);
 
     let error = api
-        .send_message(&channel(CHANNEL_ID), "hello")
+        .send_message(&channel(CHANNEL_ID), &draft("hello"))
         .await
         .expect_err("a 403 must fail");
 
@@ -585,6 +671,108 @@ async fn a_forbidden_send_maps_to_permission_denied_without_a_retry() {
         1,
         "a refused write is surfaced, not retried"
     );
+}
+
+#[tokio::test]
+async fn message_reads_include_bounded_embeds_reactions_and_attachments() {
+    let mock = MockDiscord::start(|_| MockResponse::json(rich_message())).await;
+    let api = adapter_for(&mock);
+    let message_id = MessageId::parse("100").expect("valid message id");
+
+    let message = api
+        .get_message(&channel(CHANNEL_ID), &message_id)
+        .await
+        .expect("the rich message must load");
+
+    assert_eq!(message.embeds.len(), 1);
+    let embed = &message.embeds[0];
+    assert_eq!(embed.kind, "rich");
+    assert_eq!(embed.title.as_deref(), Some("Title"));
+    assert_eq!(embed.description.as_deref(), Some("Description"));
+    assert_eq!(embed.color, Some(16_711_680));
+    assert_eq!(embed.fields[0].name, "Field");
+    assert_eq!(embed.footer.as_deref(), Some("Footer"));
+    assert_eq!(
+        embed.image_url.as_deref(),
+        Some("https://example.test/image.png")
+    );
+    assert_eq!(message.reactions.len(), 1);
+    assert_eq!(message.reactions[0].emoji, "party");
+    assert_eq!(message.reactions[0].emoji_id.as_deref(), Some("123"));
+    assert!(message.reactions[0].animated);
+    assert_eq!(message.reactions[0].count, 3);
+    assert!(message.reactions[0].me);
+    assert_eq!(message.attachments.len(), 1);
+    assert_eq!(message.attachments[0].id, "555");
+    assert_eq!(message.attachments[0].filename, "note.txt");
+    assert_eq!(message.attachments[0].size, 9);
+    assert_eq!(message.attachment_count, 1);
+}
+
+#[tokio::test]
+async fn rich_message_details_are_capped_and_long_strings_are_truncated() {
+    let mock = MockDiscord::start(|_| MockResponse::json(many_details_message())).await;
+    let api = adapter_for(&mock);
+    let message_id = MessageId::parse("100").expect("valid message id");
+
+    let message = api
+        .get_message(&channel(CHANNEL_ID), &message_id)
+        .await
+        .expect("the message must load");
+
+    assert_eq!(message.embeds.len(), 10);
+    assert_eq!(message.reactions.len(), 20);
+    assert_eq!(message.attachments.len(), 10);
+    assert_eq!(message.attachment_count, 11);
+    let title = message.embeds[0]
+        .title
+        .as_deref()
+        .expect("the first embed has a title");
+    assert_eq!(title.chars().count(), 256);
+    assert!(title.ends_with('…'));
+}
+
+#[tokio::test]
+async fn a_rich_send_posts_content_embeds_file_and_reply() {
+    let path = temp_upload("rich-send", b"hello file");
+    let mock = MockDiscord::start(|_| MockResponse::json(message("100", "hello"))).await;
+    let api = adapter_for(&mock);
+    let mut message = draft("hello");
+    message.embeds.push(NewEmbed {
+        title: Some("Title".to_string()),
+        description: Some("Description".to_string()),
+        fields: vec![NewEmbedField {
+            name: "Field".to_string(),
+            value: "Value".to_string(),
+            inline: true,
+        }],
+        ..NewEmbed::default()
+    });
+    message.attachment_paths = vec![path.clone()];
+    message.reply_to = Some(MessageId::from_u64(9009));
+
+    api.send_message(&channel(CHANNEL_ID), &message)
+        .await
+        .expect("the rich send must succeed");
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].route(), "/api/v10/channels/4004/messages");
+    assert!(
+        requests[0]
+            .header("content-type")
+            .is_some_and(|value| value.starts_with("multipart/form-data")),
+        "a file upload must be multipart: {:?}",
+        requests[0].header("content-type")
+    );
+    let body = &requests[0].body;
+    assert!(body.contains("\"content\":\"hello\""), "got {body}");
+    assert!(body.contains("\"title\":\"Title\""), "got {body}");
+    assert!(body.contains("\"message_reference\""), "got {body}");
+    assert!(body.contains("filename=\"note.txt\""), "got {body}");
+    assert!(body.contains("hello file"), "the file bytes are uploaded");
+
+    std::fs::remove_dir_all(path.parent().expect("upload directory")).ok();
 }
 
 #[tokio::test]
@@ -615,7 +803,7 @@ async fn a_timed_out_write_is_never_resent() {
     let api = adapter_with(&mock, 1, 3);
 
     let error = api
-        .send_message(&channel(CHANNEL_ID), "hello")
+        .send_message(&channel(CHANNEL_ID), &draft("hello"))
         .await
         .expect_err("the timeout must surface");
 
@@ -633,7 +821,7 @@ async fn a_server_error_on_a_write_is_not_retried() {
     let api = adapter_with(&mock, 2, 3);
 
     let error = api
-        .send_message(&channel(CHANNEL_ID), "hello")
+        .send_message(&channel(CHANNEL_ID), &draft("hello"))
         .await
         .expect_err("a persistent 500 must fail");
 
@@ -665,7 +853,7 @@ async fn a_rate_limited_send_waits_out_the_limit_and_posts_once() {
     let api = adapter_with(&mock, 5, 0);
 
     let sent = api
-        .send_message(&channel(CHANNEL_ID), "hello")
+        .send_message(&channel(CHANNEL_ID), &draft("hello"))
         .await
         .expect("a rejected attempt may be resent after the limit clears");
 
@@ -1181,6 +1369,155 @@ async fn remove_role_deletes_the_member_role_route() {
     )
     .await
     .expect("the role must be removed");
+}
+
+#[tokio::test]
+async fn nickname_changes_patch_the_member_and_clear_sends_null() {
+    let mock = MockDiscord::start(|request| {
+        assert_eq!(request.method, "PATCH");
+        assert_eq!(request.route(), "/api/v10/guilds/2002/members/9009");
+        assert_eq!(request.header("x-audit-log-reason"), Some("nickname"));
+        MockResponse::json(member("9009", "alice"))
+    })
+    .await;
+    let api = adapter_for(&mock);
+
+    api.set_member_nickname(
+        &GuildId::parse(GUILD_ID).expect("valid guild id"),
+        &UserId::parse("9009").expect("valid user id"),
+        Some("mod"),
+        Some("nickname"),
+        false,
+    )
+    .await
+    .expect("the nickname must be set");
+    api.set_member_nickname(
+        &GuildId::parse(GUILD_ID).expect("valid guild id"),
+        &UserId::parse("9009").expect("valid user id"),
+        None,
+        Some("nickname"),
+        false,
+    )
+    .await
+    .expect("the nickname must be cleared");
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].json()["nick"], "mod");
+    assert!(
+        requests[1].json()["nick"].is_null(),
+        "an empty nickname must serialize as null"
+    );
+}
+
+#[tokio::test]
+async fn kick_and_unban_use_the_member_and_ban_routes() {
+    let mock = MockDiscord::start(|request| match request.route() {
+        "/api/v10/guilds/2002/members/9009" => {
+            assert_eq!(request.method, "DELETE");
+            assert_eq!(request.header("x-audit-log-reason"), Some("kick"));
+            MockResponse::json("").status(204)
+        }
+        "/api/v10/guilds/2002/bans/9009" => {
+            assert_eq!(request.method, "DELETE");
+            assert_eq!(request.header("x-audit-log-reason"), Some("unban"));
+            MockResponse::json("").status(204)
+        }
+        other => panic!("unexpected route: {other}"),
+    })
+    .await;
+    let api = adapter_for(&mock);
+
+    api.kick_member(
+        &GuildId::parse(GUILD_ID).expect("valid guild id"),
+        &UserId::parse("9009").expect("valid user id"),
+        Some("kick"),
+        false,
+    )
+    .await
+    .expect("the member must be kicked");
+    api.unban_member(
+        &GuildId::parse(GUILD_ID).expect("valid guild id"),
+        &UserId::parse("9009").expect("valid user id"),
+        Some("unban"),
+        false,
+    )
+    .await
+    .expect("the ban must be removed");
+}
+
+#[tokio::test]
+async fn ban_posts_the_message_deletion_window() {
+    let mock = MockDiscord::start(|request| {
+        assert_eq!(request.method, "PUT");
+        assert_eq!(request.route(), "/api/v10/guilds/2002/bans/9009");
+        assert_eq!(request.header("x-audit-log-reason"), Some("ban"));
+        let body = request.json();
+        assert_eq!(body["delete_message_seconds"], 86_400);
+        MockResponse::json("").status(204)
+    })
+    .await;
+    let api = adapter_for(&mock);
+
+    api.ban_member(
+        &GuildId::parse(GUILD_ID).expect("valid guild id"),
+        &UserId::parse("9009").expect("valid user id"),
+        86_400,
+        Some("ban"),
+        false,
+    )
+    .await
+    .expect("the member must be banned");
+}
+
+#[tokio::test]
+async fn timeout_patches_a_future_expiry_and_clear_sends_null() {
+    let mock = MockDiscord::start(|request| {
+        assert_eq!(request.method, "PATCH");
+        assert_eq!(request.route(), "/api/v10/guilds/2002/members/9009");
+        assert_eq!(request.header("x-audit-log-reason"), Some("timeout"));
+        MockResponse::json(member("9009", "alice"))
+    })
+    .await;
+    let api = adapter_for(&mock);
+    let before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after 1970")
+        .as_secs();
+
+    api.timeout_member(
+        &GuildId::parse(GUILD_ID).expect("valid guild id"),
+        &UserId::parse("9009").expect("valid user id"),
+        3_600,
+        Some("timeout"),
+        false,
+    )
+    .await
+    .expect("the member must be timed out");
+    api.clear_member_timeout(
+        &GuildId::parse(GUILD_ID).expect("valid guild id"),
+        &UserId::parse("9009").expect("valid user id"),
+        Some("timeout"),
+        false,
+    )
+    .await
+    .expect("the timeout must be cleared");
+
+    let requests = mock.requests();
+    let until = requests[0].json()["communication_disabled_until"]
+        .as_str()
+        .expect("a timeout timestamp")
+        .to_string();
+    let timestamp = twilight_model::util::Timestamp::parse(&until).expect("an ISO timestamp");
+    let seconds = timestamp.as_secs() as u64;
+    assert!(
+        seconds >= before + 3_500 && seconds <= before + 3_700,
+        "the timeout must be about an hour in the future, got {seconds} from {before}"
+    );
+    assert!(
+        requests[1].json()["communication_disabled_until"].is_null(),
+        "clearing a timeout must serialize as null"
+    );
 }
 
 #[tokio::test]

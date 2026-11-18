@@ -185,7 +185,7 @@ Everything below is implemented and tested on the branch; this is its gate.
 - [x] Unconditional guard against editing or deleting the bot's own highest role, or removing it from the bot; no setting disables it.
 - [x] Remote scope resolved before spending an action: a thread through its parent channel, an invite through its channel, roles through the hierarchy.
 - [x] Bulk delete: 2–`max_bulk_delete` distinct IDs, none older than 14 days, checked from the snowflake without a request.
-- [x] `--read-only` / `DISCORD_MCP_READ_ONLY=1` disables all three mutation classes for the session.
+- [x] `--read-only` / `DISCORD_MCP_READ_ONLY=1` disables all three mutation classes then defined for the session.
 - [x] `policy.protected_channels` and `policy.protected_roles`: edit/delete/overwrite/thread-edit refusals enforced before the budget and independent of the allowlists.
 - [x] Budget state file has a single process owner, enforced by an exclusive lock; a second instance with mutations enabled fails startup, and read-only instances do not open it.
 - [x] Removed the unused `policy.require_confirmation_for_destructive` setting; configuration rejects it, and the docs describe `dry_run` plus allowlists as the approval model.
@@ -220,3 +220,57 @@ Everything below is implemented and tested on the branch; this is its gate.
 - [ ] Live scan against the test guild, including a channel without Read Message History.
 
 **Release decision:** Merge only after the live scan confirms the per-channel error path.
+
+## Phase 13 — Rich messages (`feat/user-message-search`)
+
+- [x] Message reads include bounded embeds, reactions and attachment metadata.
+- [x] Rich details are capped at 10 embeds, 25 fields per embed, 20 reactions and
+  10 attachments; long strings are truncated with an ellipsis, while
+  `attachment_count` keeps the full attachment count.
+- [x] `discord_send_message` accepts optional text, embeds, files and a reply
+  target.
+- [x] Embed count, total characters, field lengths and URL schemes are checked
+  locally against Discord's limits.
+- [x] File uploads require `policy.attachment_root`; paths are canonicalised
+  beneath it and absolute paths, `..`, directories and escaping symlinks are
+  refused.
+- [x] Per-file and total upload bytes are bounded before the action budget is
+  spent, and the existing action/send budgets still apply.
+- [x] Replies are sent with mentions disabled, including the reply ping.
+- [x] Documentation updated: `README.md`, `docs/TOOLS.md`, `docs/SETUP.md`,
+  `docs/SECURITY.md`, `SPEC.md`, `llm_instruction.md`, `CHANGELOG.md`.
+- [x] All 245 tests pass (24 lib, 53 integration, 35 protocol, 133 unit).
+- [ ] Live rich send in the test guild: embed, file, reply and a reply-ping check.
+
+**Release decision:** Merge only after the live rich send confirms the Discord
+rendering and permission path.
+
+## Phase 14 — Member moderation (`feat/user-message-search`)
+
+- [x] `discord_set_member_nickname`, `discord_kick_member`,
+  `discord_ban_member`, `discord_unban_member`, `discord_timeout_member` and
+  `discord_clear_member_timeout`, all under `moderation_enabled`, the guild
+  allowlist, the shared budget and `dry_run`.
+- [x] Bounded inputs: nicknames 1–32 characters (exactly empty clears), reasons
+  at most 512 characters without newlines/NUL, ban message deletion at most
+  seven days, and timeouts from one second to 28 days.
+- [x] An unconditional self-target guard for real moderation calls; a dry run
+  skips it because it needs the bot identity lookup.
+- [x] Audit records name the guild and target user via
+  `AuditTarget::for_member`, without recording the reason or content.
+- [x] Policy checks run before argument validation, so a disabled class is
+  always `POLICY_BLOCKED` even for a malformed request.
+- [x] Adapter tests cover each Discord route, audit-reason header, ban deletion
+  body, nickname clear (`null`) and timeout expiry/clear (`null`).
+- [x] Protocol tests cover the expanded `tools/list`, a disabled-class refusal
+  and a moderation dry run.
+- [x] Documentation updated: `README.md`, `SPEC.md`, `docs/TOOLS.md`,
+  `docs/SETUP.md`, `docs/SECURITY.md`, `llm_instruction.md`, `CHANGELOG.md`.
+- [x] All 261 tests pass (24 lib, 57 integration, 37 protocol, 143 unit).
+- [x] `cargo fmt --all --check` passes.
+- [x] `cargo clippy --all-targets --all-features -- -D warnings` passes.
+- [ ] Live moderation smoke in the test guild: nickname set/clear, kick/ban/
+  unban and timeout/clear, including permission and hierarchy refusals.
+
+**Release decision:** Merge only after the live moderation smoke confirms the
+Discord permission and hierarchy paths.

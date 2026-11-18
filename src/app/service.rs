@@ -44,6 +44,7 @@ impl AppService {
         // restart cannot reset the rolling window.
         let mutations_enabled = config.policy.write_enabled
             || config.policy.control_enabled
+            || config.policy.moderation_enabled
             || config.policy.administrative_enabled;
         let discord = if mutations_enabled {
             let budget_file = config
@@ -113,6 +114,7 @@ impl AppService {
         }
         for (enabled, name) in [
             (config.policy.control_enabled, "control"),
+            (config.policy.moderation_enabled, "moderation"),
             (config.policy.administrative_enabled, "administrative"),
         ] {
             if enabled {

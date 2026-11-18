@@ -4,15 +4,16 @@ End-to-end instructions for installing and using this MCP server: a Discord bot
 application, the build, configuration, both transports, client wiring, and the
 checks that tell you it is actually working.
 
-This build exposes 32 tools and one resource: nine read tools and 23 mutations
-in three separately gated classes. Every mutation class is off by default.
+This build exposes 39 tools and one resource: ten read tools and 29 mutations
+in four separately gated classes. Every mutation class is off by default.
 `policy.write_enabled` opens send, edit, reactions and pins;
 `policy.control_enabled` opens message deletion, channels, permission overwrites,
-threads and invites; `policy.administrative_enabled` opens bulk delete and the
-role tools. Enabling a class also requires a non-empty allowlist (channels for
-the first two, guilds for the third). Every real mutation is audited, every
-mutation except `discord_send_message` can be planned with `dry_run`, and none is
-retried after an ambiguous outcome.
+threads and invites; `policy.moderation_enabled` opens member nicknames, kicks,
+bans, unbans and timeouts; `policy.administrative_enabled` opens bulk delete and
+the role tools. Enabling a class also requires a non-empty allowlist (channels
+for write and control, guilds for moderation and administration). Every real
+mutation is audited, every mutation except `discord_send_message` can be planned
+with `dry_run`, and none is retried after an ambiguous outcome.
 
 - Platform: Windows 11 x64 (`x86_64-pc-windows-msvc`). No WSL or Docker.
 - Transports: STDIO (default) and MCP Streamable HTTP (`/mcp`).
@@ -114,11 +115,16 @@ under **Server Settings → Roles** (or through channel overwrites):
 | channels, permission overwrites | Manage Channels, plus Manage Roles to change a role or member overwrite |
 | threads | Create Public Threads or Create Private Threads, Manage Threads, Send Messages in Threads |
 | invites | Create Instant Invite; Manage Channels on that channel (or Manage Guild) to delete |
+| nickname | Manage Nicknames |
+| kick | Kick Members |
+| ban / unban | Ban Members |
+| timeout / clear timeout | Moderate Members |
 | role tools | Manage Roles, and the role below the bot's highest role |
 
-Role tools are enabled separately by `policy.administrative_enabled` and the
-guild allowlist; structure tools by `policy.control_enabled`. See
-[TOOLS.md §4](TOOLS.md#4-channel-thread-and-invite-control) and §5.
+Member moderation is enabled separately by `policy.moderation_enabled` and the
+guild allowlist; role tools by `policy.administrative_enabled`; structure tools
+by `policy.control_enabled`. See
+[TOOLS.md §4](TOOLS.md#4-channel-thread-and-invite-control), §5 and §6.
 
 While on the Roles page, drag the bot's role above every role it must manage —
 Discord only allows a bot to change roles below its own highest role, and a role
@@ -138,8 +144,9 @@ reactions, editing another author's message), `64` Add Reactions, `1` Create
 Instant Invite, `16` Manage Channels (channels, overwrites, deleting an invite),
 `268435456` Manage Roles, `17179869184` Manage Threads, `34359738368` Create
 Public Threads, `68719476736` Create Private Threads, `274877906944` Send
-Messages in Threads, and `2251799813685248` Pin Messages on current Discord
-(older API behaviour used Manage Messages). `Administrator` is never required;
+Messages in Threads, `2251799813685248` Pin Messages, `2` Kick Members, `4` Ban
+Members, `134217728` Manage Nicknames, and `1099511627776` Moderate Members.
+The pin value is current Discord; older API behaviour used Manage Messages. `Administrator` is never required;
 the bot's Discord permissions remain the final authority.
 
 **Intents and permissions are different things.** Permissions decide what the bot
@@ -260,6 +267,7 @@ Settings that matter most (see `config/default.toml` for every key):
 |---|---|---|
 | `policy.write_enabled` | `false` | Send, edit, reactions and pins; requires a channel allowlist |
 | `policy.control_enabled` | `false` | Message deletion, channels, overwrites, threads and invites; requires a channel allowlist |
+| `policy.moderation_enabled` | `false` | Member nicknames, kicks, bans, unbans and timeouts; requires a guild allowlist |
 | `policy.administrative_enabled` | `false` | Bulk delete and the role tools; requires a guild allowlist |
 | `policy.autonomy.max_actions_per_minute` | `30` | Rolling per-minute budget shared by every mutation, sends included |
 | `policy.autonomy.max_sends_per_channel_per_minute` | `5` | Messages one channel may receive per rolling minute |
@@ -272,6 +280,12 @@ Settings that matter most (see `config/default.toml` for every key):
 | `policy.protected_channels` | `[]` | Channel IDs no tool may edit, delete, overwrite or thread-edit, even when allowlisted |
 | `policy.protected_roles` | `[]` | Role IDs no tool may edit or delete, even when allowlisted |
 | `policy.max_messages_per_read` | `100` | Page-size ceiling; a larger `limit` argument is refused |
+| `policy.max_embeds_per_message` | `10` | Embeds allowed on one send |
+| `policy.max_embed_characters` | `6000` | Total characters across embeds on one send |
+| `policy.max_attachments_per_message` | `10` | Files allowed on one send |
+| `policy.max_attachment_bytes` | `8388608` | Largest single uploaded file (8 MiB) |
+| `policy.max_attachment_total_bytes` | `16777216` | Total upload bytes on one send (16 MiB) |
+| `policy.attachment_root` | unset | Directory uploads must stay beneath; unset disables file uploads |
 | `policy.max_concurrent_requests` | `8` | Caps concurrent Discord requests |
 | `discord.request_timeout_seconds` | `20` | Per Discord call |
 | `discord.max_retries` | `3` | Retries for retryable read failures |
@@ -337,8 +351,8 @@ To use a custom configuration, add `"--config", "D:\\...\\config\\local.toml"` t
 
 ### What the server exposes
 
-Thirty-two tools and the `discord://guilds` resource: nine read tools (including
-`discord_get_capabilities`) and 23 mutations split across the three class flags
+Thirty-nine tools and the `discord://guilds` resource: ten read tools (including
+`discord_get_capabilities`) and 29 mutations split across the four class flags
 above. Argument schemas reject unknown fields, and Discord snowflakes are decimal
 strings, never numbers.
 
@@ -349,13 +363,15 @@ policy precondition and error code.
 
 Every mutation class is off until you say otherwise, and enabling one requires an
 allowlist. Writes (send, edit, reactions, pins) and structure (delete, channels,
-overwrites, threads, invites) use the channel allowlist; administration (bulk
-delete, roles) uses the guild allowlist:
+overwrites, threads, invites) use the channel allowlist; moderation (nicknames,
+kicks, bans, unbans, timeouts) and administration (bulk delete, roles) use the
+guild allowlist:
 
 ```toml
 [policy]
 write_enabled = true
 control_enabled = true
+moderation_enabled = true
 administrative_enabled = true
 channel_allowlist = ["1572365820133118035"]   # #general
 guild_allowlist = ["1572365819281932408"]     # test_mcp_server
@@ -375,7 +391,8 @@ mutations act on the same allowlisted scope. IDs in `protected_channels` or
 allowlisted, before the budget is spent. What applies to every real attempt:
 mentions in content are neutralised (a zero-width space is inserted) and the
 request carries an empty mention parse list; the body is limited by
-`policy.max_message_characters` in characters; every mutation, including
+`policy.max_message_characters` in characters; embeds and uploads are bounded by
+the `policy.max_embed_*` and `policy.max_attachment_*` settings; every mutation, including
 `discord_send_message`, draws on the shared rolling budget
 (`max_actions_per_minute`), sends also draw on their channel's
 `max_sends_per_channel_per_minute`, and the window is persisted so a restart does
@@ -390,7 +407,7 @@ arguments and local policy, returns `{"dry_run":true,"action":"…"}`, and sends
 nothing — no request, no budget, no audit record. A dry run cannot reveal a
 missing Discord permission or a role-hierarchy problem; the first real call is
 where that `403` appears. `--read-only` (or `DISCORD_MCP_READ_ONLY=1`) turns all
-three classes off for the session without editing the file.
+four classes off for the session without editing the file.
 
 A first call to try — `discord_list_guilds` with no arguments — returns:
 
@@ -671,11 +688,11 @@ Exit codes: `0` success, `1` internal failure, `2` usage/configuration error,
   config file, client config, screenshot or commit. If you load it from Windows
   Credential Manager through a launcher, it exists only in the server process.
 - The HTTP token is given to MCP clients; the bot token never is.
-- Keep `write_enabled`, `control_enabled` and `administrative_enabled` at
-  `false` unless you deliberately want those classes. Enabling writes or control
-  requires a non-empty `policy.channel_allowlist`; enabling administration
-  requires a non-empty `policy.guild_allowlist`, and validation refuses the flag
-  without it. `policy.allow_mass_mentions` must stay `false` (validation refuses
+- Keep `write_enabled`, `control_enabled`, `moderation_enabled` and
+  `administrative_enabled` at `false` unless you deliberately want those classes.
+  Enabling writes or control requires a non-empty `policy.channel_allowlist`;
+  enabling moderation or administration requires a non-empty
+  `policy.guild_allowlist`, and validation refuses the flag without it. `policy.allow_mass_mentions` must stay `false` (validation refuses
   `true`).
 - Keep `policy.autonomy.max_actions_per_minute` modest; it is the blast-radius
   cap for an autonomous loop, and `max_sends_per_channel_per_minute` keeps one
