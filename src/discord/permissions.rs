@@ -82,9 +82,9 @@ pub fn resolve(
             )));
         };
         if name == "ADMINISTRATOR" && !allow_administrator {
-            return Err(AppError::invalid_argument(
-                "`allow` must not grant ADMINISTRATOR; an overwrite cannot escalate privileges",
-            ));
+            return Err(AppError::invalid_argument(format!(
+                "`{context}` must not grant ADMINISTRATOR; it would escalate privileges"
+            )));
         }
         bits |= bit;
     }
