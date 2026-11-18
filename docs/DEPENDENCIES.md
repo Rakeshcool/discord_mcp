@@ -54,9 +54,9 @@ Verified from `~/.cargo/registry/src/*/rmcp-3.11.0`.
   as of this version, so the code uses `ServerConfig`. Neither alias may be
   constructed with a struct literal, and `Implementation` (also
   `#[non_exhaustive]`) is built with `Implementation::new(name, version)`.
-  Both rules were confirmed by the compiler during Phase 1.
+  Both rules are enforced by the compiler.
 
-## Discord client — `twilight-http 0.18` (selected, added in Phase 2)
+## Discord client — `twilight-http 0.18`
 
 - REST-only client for Discord's HTTP API, hyper-based, from the maintained
   twilight ecosystem. Its own documentation states it "meets Discord's
@@ -68,35 +68,16 @@ Verified from `~/.cargo/registry/src/*/rmcp-3.11.0`.
   `Retry-After` handling are exactly what a hand-rolled client gets wrong.
 - MSRV 1.89, which is why the crate MSRV is 1.89.
 
-### Mock-server strategy for integration tests (resolved)
+### Mock-server strategy for integration tests
 
 `twilight-http` has no base-URL override, but `ClientBuilder::proxy(host,
-use_http)` — verified in `twilight-http-0.18.0/src/client/mod.rs` — rewrites every
-request to `{scheme}://{host}/api/v{API_VERSION}/{path}`. That is the hook
-twilight documents for running through an HTTP proxy, and it is what the adapter
-uses, so no route needs a fallback transport:
-
-- All application code depends on the application-owned `DiscordApi` trait in
-  `src/discord/client.rs`; twilight types never leave `src/discord/adapter.rs`.
-- The adapter derives the proxy authority from `discord.api_base`.
-  `https://discord.com/api` is used directly; any other base (a loopback mock, or
-  an operator's explicit proxy) goes through `proxy(authority, use_http)`.
-- `discord.api_base` must end in `/api`, and plaintext `http` is refused for any
-  non-loopback authority, so a misconfigured base cannot silently strip TLS to a
-  remote host.
-- `tests/integration/mock_discord.rs` is a hand-rolled tokio `TcpListener` that
-  answers with canned JSON, records the requests it saw and can delay or fail on
-  demand. No extra test-server dependency, no `reqwest` fallback: the tests drive
-  the shipped client over a real socket.
-- 429 handling (including `Retry-After`) belongs to twilight's ratelimiter and is
-  covered through the same mock. The adapter's own retry loop handles only
-  transient failures — network errors, timeouts and 5xx — bounded by
-  `discord.max_retries` with jittered backoff, and every attempt is wrapped in the
-  configured `request_timeout_seconds`, so a rate-limit wait cannot exceed it.
-- Page sizes are clamped to Discord's documented maxima before any request is
-  built (guilds 200, messages 100, members 1000); an out-of-range limit is an
-  `INVALID_ARGUMENT`, not a `400` from Discord. A full page yields `next_cursor`
-  from the last id, so callers paginate by passing it back as the cursor.
+use_http)` rewrites every request to
+`{scheme}://{host}/api/v{API_VERSION}/{path}`. The adapter derives that
+authority from `discord.api_base`, which must end in `/api`; plaintext `http` is
+refused for any non-loopback authority, so a misconfigured base cannot strip
+TLS from a remote host. `tests/integration/mock_discord.rs` is a hand-rolled
+tokio `TcpListener` with canned JSON, so the tests drive the shipped client over
+a real socket without a test-server dependency.
 
 ### TLS crypto provider — `rustls 0.23.46` with `ring`
 
@@ -107,7 +88,7 @@ would panic. The adapter installs `ring`'s provider exactly once
 version already in the lock file with that provider enabled. `ring` is chosen over
 `aws-lc-rs` because it builds on Windows MSVC without CMake or NASM.
 
-### HTTP serving — `axum =0.8.9` (Phase 6)
+### HTTP serving — `axum =0.8.9`
 
 `rmcp`'s `server-side-http` feature provides the MCP logic as a `tower` service
 (`Service<http::Request<B>>`, `Error = Infallible`); it does not provide a server.
@@ -163,7 +144,7 @@ control; a general client would hide those headers behind an API.
 `ExposeSecret` trait, which this crate uses so a token cannot be `Debug`-printed
 by accident.
 
-## MCP tool schemas (Phase 4)
+## MCP tool schemas
 
 Tool arguments are derived with `schemars 1.2.3`, the version `rmcp` itself
 re-exports, so the schema the SDK validates against and the schema the macros
@@ -223,7 +204,7 @@ Re-check when `rmcp` or `schemars` ship a release without `chrono`, if the
 advisory is upgraded from "unmaintained" to a vulnerability, or at the next
 scheduled scan — whichever comes first.
 
-## v1 bot scopes and minimum permissions (Phase 0 decision)
+## v1 bot scopes and minimum permissions
 
 OAuth2 install URL scope: `bot` only. `applications.commands` is deliberately
 not requested — this server registers no slash commands.
