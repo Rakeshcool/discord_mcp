@@ -8,14 +8,16 @@ It is not a self-bot, not a user-account automation tool, and not a Discord
 client reimplementation. **Start with [`docs/SETUP.md`](docs/SETUP.md)** for the
 full install-to-first-call guide (Discord app, intents, permissions, both
 transports, client configuration, verification, troubleshooting). See `SPEC.md`
-for the full specification, `TASKS.md` for the phased plan, and
+for the full specification, `TASKS.md` for the phased plan,
+[`docs/TOOLS.md`](docs/TOOLS.md) for the per-tool reference, and
 `docs/SECURITY.md` for the threat model.
 
 ## Status
 
-Through Phase 7 — read access over STDIO and Streamable HTTP, plus one audited
-write tool that is disabled by default. The remaining write operations (edit,
-delete, reactions) and Phases 8–10 are planned and not started.
+Through Phase 9 — read access over STDIO and Streamable HTTP, one audited write
+tool that is disabled by default, and a tagged `v0.1.0` release with a committed
+checksum. The remaining write operations (edit, delete, reactions) are not
+started, and the Phase 10 release gate is unsigned.
 
 Implemented: typed configuration with fail-closed validation, stable error
 categories, secret wrapper, structural secret redaction, stderr-only logging,
@@ -40,9 +42,10 @@ Not implemented yet:
   covered by process tests.
 - **Deployment.** TLS termination is not implemented; a reverse proxy has to
   terminate it, and `docs/SETUP.md` §7 documents the settings it must use.
-- **Hardening (Phase 8).** No correlation IDs on tool executions, no graceful
-  drain of the HTTP listener (STDIO stops when the client closes stdin), and no
-  dependency-audit policy.
+- **Packaging.** `v0.1.0` is a local tag; nothing is published, and the release
+  gate (`TASKS.md` Phase 10) has not been signed off against a shipped artifact.
+- **Credential store.** The bot token comes from the environment; Windows
+  Credential Manager is documented as a launcher pattern, not read natively.
 
 ## Build and test
 
@@ -161,4 +164,5 @@ bounded by the request deadline.
 
 Bot creation, intents, permissions, client configuration, verification steps and
 troubleshooting are in [`docs/SETUP.md`](docs/SETUP.md);
-`docs/DEPENDENCIES.md` records the verified dependency and API decisions.
+[`docs/TOOLS.md`](docs/TOOLS.md) documents every tool, argument and result shape,
+and `docs/DEPENDENCIES.md` records the verified dependency and API decisions.

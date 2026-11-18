@@ -178,7 +178,9 @@ pub struct Page<T> {
     pub items: Vec<T>,
     /// Opaque cursor for the next page, when one is available.
     ///
-    /// Callers pass this back as the `after` cursor; they must not interpret it.
+    /// Callers pass this back as the tool's paging cursor — `after` for
+    /// ascending listings, `before` for message history — and must not
+    /// interpret it.
     pub next_cursor: Option<String>,
 }
 
