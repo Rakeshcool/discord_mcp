@@ -146,10 +146,14 @@ channels, and only when writes are deliberately enabled.
 - Annotated tag `v0.1.0` on the release commit; no remote exists, so nothing was
   pushed.
 - `dist/discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256` records the SHA-256 of
-  the release executable built from that commit. The executable is not committed,
-  and two builds of the same commit are not byte-identical — verified by building
-  twice — so the file identifies one build rather than a reproducible input.
-  `docs/SETUP.md` §8 says to regenerate it after rebuilding.
+  the release executable, and the build is byte-reproducible, so the file
+  verifies a rebuild instead of identifying one build. `build.rs` passes
+  `/Brepro` — without it the MSVC linker stamps the link time and a random PDB
+  GUID into every executable — and `scripts/build-release.ps1` remaps the
+  absolute Cargo-registry and workspace paths that dependency panic messages
+  embed. `docs/SETUP.md` §8 rebuilds and compares. Reproducibility is scoped to
+  one checkout: a build from a different directory differs, because Cargo hashes
+  the package's absolute path into crate metadata and that reorders symbols.
 - The release build was verified from a clean checkout of the tag
   (`git worktree`, `cargo build --release --locked`), then `--validate-config` and
   a STDIO handshake from that tree — the guide's §3 path needs no file that is
@@ -194,10 +198,9 @@ channels, and only when writes are deliberately enabled.
 - Release build from a clean checkout of the tag: `cargo build --release
   --locked` on a fresh `git worktree`, then `--validate-config` and the STDIO
   handshake from that tree. Not yet installed on a second machine.
-- SHA-256 of the release executable recorded in `dist/`, matching the binary
-  built in this workspace. A second build of the same commit produced different
-  bytes, so the checksum is an artifact identifier, not a reproducible-build
-  claim.
+- SHA-256 of the release executable recorded in `dist/`. Repeated builds of the
+  tag hash to the committed value, including a build from an empty `target/`; a
+  build from a different directory does not, which the docs state.
 - Release gate (Phase 10) signed off against the clean release artifact: 151
   tests, `fmt`, Clippy, a from-scratch MSVC release build, protocol-clean STDIO
   output, the HTTP refusals (`401`, `401`, `403`, `403`), writes and mass mentions
@@ -220,5 +223,3 @@ channels, and only when writes are deliberately enabled.
   acknowledgement, termination and disconnect recovery are covered.
 - No published artifact: the tag, the checksum and the clean-checkout build are
   local to this repository, and the release gate (Phase 10) is unsigned.
-- Byte-for-byte reproducible executables: a relink changes the hash, so the
-  committed checksum cannot be used to prove a rebuild matches the tag.

@@ -537,15 +537,20 @@ Run these in order; each one isolates a different layer.
    [`../dist/discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256`](../dist/discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256):
 
    ```powershell
-   (Get-FileHash .\target\release\discord-mcp.exe -Algorithm SHA256).Hash.ToLower()
+   .\scripts\build-release.ps1
    Get-Content dist\discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256
    ```
 
-   They match only when you are holding the exact executable the file was written
-   for. Two builds of the same commit are **not** byte-identical — a relink stamps
-   the executable anew — so a binary you rebuilt yourself has a different hash.
-   That is not tampering: regenerate the file with the commands above against the
-   artifact you actually built. The executable itself is not committed.
+   The script prints the SHA-256 of the artifact it just built; it must equal the
+   hash in that file. The release build is byte-reproducible: `build.rs` passes
+   `/Brepro`, without which the MSVC linker stamps the build time and a random
+   PDB GUID into the executable, and the script remaps the Cargo registry and
+   workspace paths that dependency panic messages would otherwise embed. A plain
+   `cargo build --release` in this checkout produces the same hash, as does a
+   build from an empty `target/`. A build from a **different directory** does not:
+   Cargo hashes the package's absolute path into crate metadata, which reorders
+   symbols, so verify by rebuilding in the same checkout. The executable itself is
+   not committed.
 
 A quick scripted STDIO smoke test (PowerShell), which prints the JSON-RPC
 responses and nothing else:

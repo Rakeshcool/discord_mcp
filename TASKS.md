@@ -279,10 +279,12 @@ and disconnect recovery; event replay after a reconnect (resumption) is not.
 - [x] Generate SHA-256 checksum.
       `dist/discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256` records the hash of
       the release build from the tagged commit, with the command that regenerates
-      it; `docs/SETUP.md` §8 verifies it. The executable is not committed, and two
-      builds of the same commit are not byte-identical (verified by building
-      twice), so the file identifies one build rather than a reproducible input.
-      That limitation is documented rather than glossed over.
+      it; `docs/SETUP.md` §8 verifies it. The executable is not committed. The build
+      is byte-reproducible — `build.rs` passes `/Brepro` and
+      `scripts/build-release.ps1` remaps absolute dependency paths — so the
+      checksum verifies a rebuild in the same checkout. A build from another
+      directory differs, because Cargo hashes the package's absolute path into
+      crate metadata; `docs/SETUP.md` §8 says so.
 - [x] Test clean installation on a Windows machine. A fresh `git worktree` of
       the tag was built with `cargo build --release --locked`, then
       `--validate-config` and a STDIO `initialize`/`tools/call` handshake were run
@@ -309,7 +311,9 @@ empty `target/` — not against the working tree.
       with no warnings.
 - [x] Windows MSVC release build succeeds. From a cleaned tree,
       `x86_64-pc-windows-msvc` release build finished in 2m57s producing an
-      11.6 MB executable.
+      11.6 MB executable. The build is byte-reproducible within a checkout:
+      `build.rs` passes `/Brepro` to the MSVC linker, and the release script
+      normalises the absolute paths that dependency panic messages would embed.
 - [x] STDIO protocol output is clean. `initialize` plus `tools/list` produced two
       stdout frames, both parsing as JSON-RPC 2.0, with zero non-JSON lines; all
       eight log lines went to stderr.
