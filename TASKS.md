@@ -48,9 +48,11 @@ Legend: `TODO` = not started · `IN PROGRESS` = active · `DONE` = verified comp
 
 **Exit criteria:** Read-only Discord operations work against mocks and an optional test bot.
 
-Met against mocks: 22 adapter tests run the real twilight client over a local
-socket (`tests/integration`). No live test bot was used, so live-endpoint
-behaviour rests on the documented API contract rather than an observed call.
+Met against mocks first: 22 adapter tests run the real twilight client over a
+local socket (`tests/integration`). Live verification followed: the eight read
+tools were exercised against a real guild (`test_mcp_server`) over both STDIO and
+HTTP, including non-empty message text once the Message Content intent was
+enabled.
 
 ## Phase 3 — Security and policy engine
 
@@ -95,8 +97,8 @@ approval path is proven against fake approval sources rather than a real one.
 Met: eight read tools and the `discord://guilds` resource are registered over the
 policy gate, with `deny_unknown_fields` argument schemas and `readOnlyHint`
 annotations. Denials are proven over stdio (`isError` results carrying
-`POLICY_BLOCKED`); successful Discord reads are covered by the adapter and gate
-tests, not end to end, because no live bot is used.
+`POLICY_BLOCKED`), and successful reads were confirmed end to end against a real
+guild over both transports.
 
 ## Phase 5 — STDIO transport
 
@@ -133,9 +135,15 @@ tests, not end to end, because no live bot is used.
       *(not added: `/mcp` is the only route, and no deployment design asked for
       one)*
 - [x] Test initialization over HTTP, including the refused cases.
-- [ ] Test sessions, notifications, and disconnects over HTTP.
-- [ ] Document TLS/reverse-proxy deployment. *(one paragraph in the README warns
-      that TLS is not implemented; a full proxy deployment guide is outstanding)*
+- [ ] Test sessions, notifications, and disconnects over HTTP. *(initialize and
+      all four refused cases are covered by process tests, and a notification
+      accepted with `202` was observed against a live server; resumption,
+      notification delivery and disconnect cleanup are not asserted anywhere)*
+- [ ] Document TLS/reverse-proxy deployment. *(TLS is not implemented, and the
+      README, `docs/SETUP.md` §7/§10 and `docs/SECURITY.md` §6 each say so with a
+      one-line "put a TLS-terminating reverse proxy in front" instruction. No
+      proxy configuration, trusted-header behaviour or hostname guidance is
+      documented)*
 - [x] Verify unauthenticated public binding is rejected.
 
 **Exit criteria:** Streamable HTTP passes protocol tests and unsafe exposure is blocked.
@@ -165,38 +173,91 @@ yet covered end to end.
 
 ## Phase 8 — Observability and operational hardening
 
-- [ ] Add correlation IDs and tracing spans.
-- [ ] Redact authorization headers and secrets unconditionally.
-- [ ] Ensure message content is not logged by default.
-- [ ] Add log rotation if file logging is enabled.
-- [ ] Add actionable startup diagnostics.
-- [ ] Add graceful shutdown and cancellation.
-- [ ] Test malformed API responses and network interruptions.
-- [ ] Test ambiguous write outcomes and no blind retries.
-- [ ] Review dependency vulnerabilities and update policy.
+- [ ] Add correlation IDs and tracing spans. *(no request or trace id is
+      generated or attached to a tool execution; `docs/SECURITY.md` §7 tracks it
+      as outstanding)*
+- [x] Redact authorization headers and secrets unconditionally. `redact()`
+      strips `Bot <token>` and `Bearer <token>` shapes and the values of
+      `authorization`, `x-api-key` and `token` keys whatever the secret is, and
+      both `RedactedStderr` and the panic hook run through it.
+- [x] Ensure message content is not logged by default. Audit records carry
+      action, target IDs, outcome and category only;
+      `logging.redact_message_content` defaults to `true` and
+      `logging.log_tool_arguments` to `false`.
+- [ ] Add log rotation if file logging is enabled. *(no file logging exists —
+      every record goes to stderr — so there is nothing to rotate; this becomes
+      real work only if a file sink is added)*
+- [x] Add actionable startup diagnostics. `--validate-config` reports the
+      configuration source, transport, token presence and effective exposure
+      (bind, authentication, write state), and every startup failure carries a
+      stable error category and exit code. `docs/SETUP.md` §9 maps symptoms to
+      fixes.
+- [ ] Add graceful shutdown and cancellation. *(STDIO stops when the client
+      closes stdin, which is the protocol's own shutdown; the HTTP listener has
+      no graceful drain and Ctrl+C is ordinary process termination)*
+- [ ] Test malformed API responses and network interruptions. *(malformed bodies,
+      slow responses and the retry budget are covered by
+      `an_unparsable_body_maps_to_network_error`, `a_slow_response_times_out` and
+      `retries_are_bounded_and_report_the_discord_category`; a connection reset
+      or drop mid-body is not)*
+- [ ] Test ambiguous write outcomes and no blind retries. *(no write path exists
+      yet, so there is no ambiguous write outcome to test; reads retry only
+      transient failures, bounded by `discord.max_retries`, and that budget is
+      tested)*
+- [ ] Review dependency vulnerabilities and update policy. *(every dependency is
+      pinned exactly and `Cargo.lock` is committed, but no `cargo audit` run or
+      written vulnerability-response policy exists)*
 
 **Exit criteria:** Operational diagnostics are useful without leaking credentials or message content.
 
 ## Phase 9 — Documentation and release packaging
 
-- [ ] Complete README setup guide.
-- [ ] Document Discord Developer Portal bot creation.
-- [ ] Document OAuth2 installation and least-privilege permissions.
-- [ ] Document environment-variable and Credential Manager options.
-- [ ] Document STDIO configuration for Windows MCP clients.
-- [ ] Document Streamable HTTP configuration and secure exposure.
-- [ ] Complete `docs/SECURITY.md`.
-- [ ] Complete `docs/TOOLS.md`.
-- [ ] Complete `docs/DEPENDENCIES.md`.
-- [ ] Add CHANGELOG.
-- [ ] Build release executable for Windows x64.
-- [ ] Generate SHA-256 checksum.
-- [ ] Test clean installation on a Windows machine.
-- [ ] Tag first release.
+- [x] Complete README setup guide. The README carries build, configuration,
+      environment, STDIO client config and HTTP sections, and links the full
+      walkthrough.
+- [x] Document Discord Developer Portal bot creation. `docs/SETUP.md` §2.1–2.2
+      (application, token) and §2.3 (privileged intents, with the `flags` check
+      that proves the toggle took effect).
+- [x] Document OAuth2 installation and least-privilege permissions.
+      `docs/SETUP.md` §2.4: `bot` scope only, permissions `66560`, and the call
+      that shows the bits the bot actually holds.
+- [x] Document environment-variable options. `docs/SETUP.md` §4 and the README
+      environment table cover both tokens, `DISCORD_MCP_CONFIG` and `RUST_LOG`.
+- [ ] Document Credential Manager options. *(not implemented: the bot token comes
+      from the environment variable named by `discord.token_env`, there is no
+      `keyring`-backed store, so there is nothing to document)*
+- [x] Document STDIO configuration for Windows MCP clients. `docs/SETUP.md` §6
+      gives the Claude Desktop `claude_desktop_config.json` form; launching from
+      an installed desktop client is still unverified (see Phase 5).
+- [x] Document Streamable HTTP configuration and secure exposure.
+      `docs/SETUP.md` §7: configuration, the full request sequence, every status
+      code, the loopback/`Host`/`Origin` rules and the TLS caveat.
+- [x] Complete `docs/SECURITY.md`. Identity model, assets, adversaries,
+      implemented controls, data handling, transport exposure and an explicit
+      not-yet-implemented table.
+- [ ] Complete `docs/TOOLS.md`. *(not written: the tool table lives in
+      `docs/SETUP.md` §6 and the README, with no per-tool argument and response
+      reference of its own)*
+- [x] Complete `docs/DEPENDENCIES.md`. Pinned crate set with the reason for each
+      choice, the rmcp and twilight facts verified from vendored source, and the
+      v1 scopes, permissions, intents and endpoint list.
+- [ ] Add CHANGELOG. *(no `CHANGELOG.md` exists)*
+- [x] Build release executable for Windows x64. `cargo build --release` produced
+      `target\release\discord-mcp.exe` for `x86_64-pc-windows-msvc`.
+- [ ] Generate SHA-256 checksum. *(nothing produces or commits one)*
+- [ ] Test clean installation on a Windows machine. *(the binary is built in
+      place here; it has not been installed from a clean checkout following only
+      the guide)*
+- [ ] Tag first release. *(the repository has no tags)*
 
 **Exit criteria:** A new operator can configure a bot, install the server, connect an MCP client, and use the documented tools safely.
 
 ## Phase 10 — Release gate
+
+These are signed off against the release artifact, not the working tree, so they
+stay open until Phases 7–9 land. Several already hold at the current commit and
+will be re-run then: 124 tests, `fmt`, Clippy, the release build, token-redaction
+coverage, no self-bot path, no write tools, mass mentions rejected by validation.
 
 - [ ] All tests pass.
 - [ ] `cargo fmt --check` passes.
