@@ -165,6 +165,10 @@ pub struct PolicyConfig {
     pub guild_allowlist: Vec<String>,
     /// Channels the server may touch. Required when writes are enabled.
     pub channel_allowlist: Vec<String>,
+    /// Channels no tool may edit or delete, even when allowlisted.
+    pub protected_channels: Vec<String>,
+    /// Roles no tool may edit or delete, even when allowlisted.
+    pub protected_roles: Vec<String>,
     /// Upper bound for one message read.
     pub max_messages_per_read: u16,
     /// Upper bound for an outgoing message body.
@@ -188,6 +192,8 @@ impl Default for PolicyConfig {
             write_enabled: false,
             guild_allowlist: Vec::new(),
             channel_allowlist: Vec::new(),
+            protected_channels: Vec::new(),
+            protected_roles: Vec::new(),
             max_messages_per_read: 100,
             max_message_characters: 2_000,
             allow_mass_mentions: false,
@@ -208,18 +214,25 @@ impl Default for PolicyConfig {
 pub struct AutonomyConfig {
     /// Mutating actions allowed per minute, across every tool.
     pub max_actions_per_minute: u16,
+    /// Messages `discord_send_message` may post to one channel per minute.
+    pub max_sends_per_channel_per_minute: u16,
     /// Largest accepted bulk-delete batch.
     pub max_bulk_delete: u16,
     /// Tools that must be called with `dry_run = true`.
     pub require_dry_run: Vec<String>,
+    /// File carrying the rolling budget across restarts. `None` uses the
+    /// per-user default location.
+    pub budget_state_file: Option<String>,
 }
 
 impl Default for AutonomyConfig {
     fn default() -> Self {
         Self {
             max_actions_per_minute: 30,
+            max_sends_per_channel_per_minute: 5,
             max_bulk_delete: 50,
             require_dry_run: Vec::new(),
+            budget_state_file: None,
         }
     }
 }
@@ -458,11 +471,27 @@ impl PolicyConfig {
         }
         validate_allowlist("policy.guild_allowlist", &self.guild_allowlist)?;
         validate_allowlist("policy.channel_allowlist", &self.channel_allowlist)?;
+        validate_allowlist("policy.protected_channels", &self.protected_channels)?;
+        validate_allowlist("policy.protected_roles", &self.protected_roles)?;
 
         if !(1..=600).contains(&self.autonomy.max_actions_per_minute) {
             return Err(ConfigError::invalid(
                 "policy.autonomy.max_actions_per_minute",
                 "must be between 1 and 600",
+            ));
+        }
+        if !(1..=600).contains(&self.autonomy.max_sends_per_channel_per_minute) {
+            return Err(ConfigError::invalid(
+                "policy.autonomy.max_sends_per_channel_per_minute",
+                "must be between 1 and 600",
+            ));
+        }
+        if let Some(path) = &self.autonomy.budget_state_file
+            && path.trim().is_empty()
+        {
+            return Err(ConfigError::invalid(
+                "policy.autonomy.budget_state_file",
+                "must not be empty; omit it for the per-user default location",
             ));
         }
         if !(2..=100).contains(&self.autonomy.max_bulk_delete) {

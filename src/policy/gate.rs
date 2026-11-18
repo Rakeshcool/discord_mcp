@@ -14,11 +14,11 @@
 //! mention neutralisation, applied before the request is built), and every
 //! attempt produces one audit record whatever its outcome.
 
-use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -34,6 +34,7 @@ use crate::discord::models::{
 use crate::discord::permissions::PermissionBits;
 use crate::error::{AppError, ErrorCategory};
 use crate::policy::audit::{AuditEvent, AuditSink, AuditTarget};
+use crate::policy::budget::ActionBudget;
 use crate::policy::rules::Policy;
 
 /// A Discord client with policy in front of it.
@@ -42,10 +43,10 @@ pub struct PolicyGate {
     policy: Arc<Policy>,
     permits: Arc<Semaphore>,
     audit: Arc<dyn AuditSink>,
-    /// Timestamps of recent mutations, oldest first, for the per-minute budget.
-    /// A deque rather than a counter because the window rolls: an action a minute
-    /// ago must stop counting without a background task to decrement anything.
-    recent_actions: Arc<tokio::sync::Mutex<VecDeque<Instant>>>,
+    /// Recent mutation timestamps for the shared and per-channel windows. It is
+    /// persisted when the gate was built with a state file, so a restart cannot
+    /// reset the limit.
+    budget: Arc<tokio::sync::Mutex<ActionBudget>>,
     /// The bot's user ID, resolved once per gate.
     ///
     /// It cannot change for the life of the process, and the role guard needs it
@@ -56,7 +57,32 @@ pub struct PolicyGate {
 
 impl PolicyGate {
     /// Wrap `inner` in policy enforcement, recording decisions in `audit`.
+    ///
+    /// The budget lives for the process only. The application builds its gate
+    /// with [`PolicyGate::with_budget_file`] so the window survives a restart.
     pub fn new(inner: Arc<dyn DiscordApi>, policy: Policy, audit: Arc<dyn AuditSink>) -> Self {
+        Self::build(inner, policy, audit, ActionBudget::in_memory())
+    }
+
+    /// Wrap `inner` with a rolling budget persisted at `path`.
+    ///
+    /// An unreadable, malformed or unknown-version file is a startup error: a
+    /// process that cannot see the window must not start with an empty one.
+    pub fn with_budget_file(
+        inner: Arc<dyn DiscordApi>,
+        policy: Policy,
+        audit: Arc<dyn AuditSink>,
+        path: PathBuf,
+    ) -> Result<Self, AppError> {
+        Ok(Self::build(inner, policy, audit, ActionBudget::load(path)?))
+    }
+
+    fn build(
+        inner: Arc<dyn DiscordApi>,
+        policy: Policy,
+        audit: Arc<dyn AuditSink>,
+        budget: ActionBudget,
+    ) -> Self {
         let permits = Arc::new(Semaphore::new(usize::from(
             policy.max_concurrent_requests(),
         )));
@@ -65,7 +91,7 @@ impl PolicyGate {
             policy: Arc::new(policy),
             permits,
             audit,
-            recent_actions: Arc::new(tokio::sync::Mutex::new(VecDeque::new())),
+            budget: Arc::new(tokio::sync::Mutex::new(budget)),
             bot_user_id: tokio::sync::OnceCell::new(),
         }
     }
@@ -76,23 +102,29 @@ impl PolicyGate {
     /// decides to clean a channel message by message runs out after
     /// `max_actions_per_minute` attempts instead of hammering the API.
     async fn consume_budget(&self, action: &'static str) -> Result<(), AppError> {
-        let mut recent = self.recent_actions.lock().await;
-        let now = Instant::now();
-        while let Some(oldest) = recent.front() {
-            if now.duration_since(*oldest) >= Duration::from_secs(60) {
-                recent.pop_front();
-            } else {
-                break;
-            }
-        }
-        let budget = usize::from(self.policy.action_budget());
-        if recent.len() >= budget {
-            return Err(AppError::policy_blocked(format!(
-                "policy.autonomy.max_actions_per_minute ({budget}) is exhausted; `{action}` was not sent"
-            )));
-        }
-        recent.push_back(now);
-        Ok(())
+        self.budget
+            .lock()
+            .await
+            .consume_action(self.policy.action_budget(), action)
+    }
+
+    /// Consume one shared action and one send from `channel_id`'s own window.
+    ///
+    /// Sending is the mutation an autonomous loop reaches for most often, so it
+    /// is bounded twice: by the shared budget every mutation pays into and by a
+    /// per-channel cap that stops one busy channel from absorbing the whole
+    /// allowance.
+    async fn consume_send_budget(
+        &self,
+        channel_id: &ChannelId,
+        action: &'static str,
+    ) -> Result<(), AppError> {
+        self.budget.lock().await.consume_send(
+            self.policy.action_budget(),
+            self.policy.send_budget(),
+            *channel_id,
+            action,
+        )
     }
 
     /// The common tail of every mutation: dry-run short-circuit, dry-run policy,
@@ -431,6 +463,11 @@ impl DiscordApi for PolicyGate {
         self.policy.check_channel(channel_id).inspect_err(|error| {
             self.record_refusal(ACTION, target, error);
         })?;
+        self.consume_send_budget(channel_id, ACTION)
+            .await
+            .inspect_err(|error| {
+                self.record_refusal(ACTION, target, error);
+            })?;
 
         self.run_write(ACTION, target, async {
             let _permit = self.permit().await?;
@@ -648,10 +685,16 @@ impl DiscordApi for PolicyGate {
         spec: &ChannelEdit,
         dry_run: bool,
     ) -> Result<MutationOutcome<ChannelSummary>, AppError> {
-        self.channel_mutation("discord_edit_channel", channel_id, dry_run, async move {
-            let outcome = self.inner.edit_channel(channel_id, spec, false).await?;
-            applied(outcome)
-        })
+        self.channel_mutation(
+            "discord_edit_channel",
+            channel_id,
+            dry_run,
+            true,
+            async move {
+                let outcome = self.inner.edit_channel(channel_id, spec, false).await?;
+                applied(outcome)
+            },
+        )
         .await
     }
 
@@ -660,10 +703,16 @@ impl DiscordApi for PolicyGate {
         channel_id: &ChannelId,
         dry_run: bool,
     ) -> Result<MutationOutcome<()>, AppError> {
-        self.channel_mutation("discord_delete_channel", channel_id, dry_run, async move {
-            let outcome = self.inner.delete_channel(channel_id, false).await?;
-            applied(outcome)
-        })
+        self.channel_mutation(
+            "discord_delete_channel",
+            channel_id,
+            dry_run,
+            true,
+            async move {
+                let outcome = self.inner.delete_channel(channel_id, false).await?;
+                applied(outcome)
+            },
+        )
         .await
     }
 
@@ -679,6 +728,7 @@ impl DiscordApi for PolicyGate {
             "discord_set_permission_overwrite",
             channel_id,
             dry_run,
+            true,
             async move {
                 let outcome = self
                     .inner
@@ -700,6 +750,7 @@ impl DiscordApi for PolicyGate {
             "discord_delete_permission_overwrite",
             channel_id,
             dry_run,
+            true,
             async move {
                 let outcome = self
                     .inner
@@ -717,10 +768,16 @@ impl DiscordApi for PolicyGate {
         spec: &NewThread,
         dry_run: bool,
     ) -> Result<MutationOutcome<ChannelSummary>, AppError> {
-        self.channel_mutation("discord_create_thread", channel_id, dry_run, async move {
-            let outcome = self.inner.create_thread(channel_id, spec, false).await?;
-            applied(outcome)
-        })
+        self.channel_mutation(
+            "discord_create_thread",
+            channel_id,
+            dry_run,
+            false,
+            async move {
+                let outcome = self.inner.create_thread(channel_id, spec, false).await?;
+                applied(outcome)
+            },
+        )
         .await
     }
 
@@ -735,6 +792,9 @@ impl DiscordApi for PolicyGate {
         let target = AuditTarget::for_channel(*thread_id);
         self.policy
             .check_tool(ACTION)
+            .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
+        self.policy
+            .check_protected_channel(thread_id)
             .inspect_err(|error| self.record_refusal(ACTION, target, error))?;
         // A thread is never on the allowlist when it was just created, so the
         // parent channel's permission stands in for it. That lookup costs a read,
@@ -764,10 +824,16 @@ impl DiscordApi for PolicyGate {
         spec: &NewInvite,
         dry_run: bool,
     ) -> Result<MutationOutcome<InviteSummary>, AppError> {
-        self.channel_mutation("discord_create_invite", channel_id, dry_run, async move {
-            let outcome = self.inner.create_invite(channel_id, spec, false).await?;
-            applied(outcome)
-        })
+        self.channel_mutation(
+            "discord_create_invite",
+            channel_id,
+            dry_run,
+            false,
+            async move {
+                let outcome = self.inner.create_invite(channel_id, spec, false).await?;
+                applied(outcome)
+            },
+        )
         .await
     }
 
@@ -838,6 +904,7 @@ impl DiscordApi for PolicyGate {
         self.role_mutation(
             "discord_edit_role",
             guild_id,
+            Some(role_id),
             dry_run,
             self.authorize_role_guard(guild_id, role_id, None),
             async move {
@@ -857,6 +924,7 @@ impl DiscordApi for PolicyGate {
         self.role_mutation(
             "discord_delete_role",
             guild_id,
+            Some(role_id),
             dry_run,
             self.authorize_role_guard(guild_id, role_id, None),
             async move {
@@ -894,6 +962,7 @@ impl DiscordApi for PolicyGate {
         self.role_mutation(
             "discord_remove_role",
             guild_id,
+            None,
             dry_run,
             self.authorize_role_guard(guild_id, role_id, Some(user_id)),
             async move {
@@ -954,7 +1023,8 @@ impl PolicyGate {
     }
 
     /// Role edits, deletions and removals additionally refuse to touch the bot's
-    /// own highest role.
+    /// own highest role, and `protect` refuses an operator-protected role before
+    /// the budget is spent.
     ///
     /// Changing or removing that role can strip the bot's permissions, so the
     /// guard is unconditional rather than a setting that a deployment could
@@ -965,6 +1035,7 @@ impl PolicyGate {
         &self,
         action: &'static str,
         guild_id: &GuildId,
+        protected_role: Option<&RoleId>,
         dry_run: bool,
         guard: impl Future<Output = Result<(), AppError>>,
         body: impl Future<Output = Result<T, AppError>>,
@@ -976,6 +1047,11 @@ impl PolicyGate {
         self.policy
             .check_guild(guild_id)
             .inspect_err(|error| self.record_refusal(action, target, error))?;
+        if let Some(role_id) = protected_role {
+            self.policy
+                .check_protected_role(role_id)
+                .inspect_err(|error| self.record_refusal(action, target, error))?;
+        }
         if !dry_run && !self.policy.requires_dry_run(action) {
             guard
                 .await
@@ -1070,19 +1146,29 @@ impl PolicyGate {
     }
 
     /// Channel-scoped structural mutations share one preamble: the control
-    /// flag, the channel allowlist, the budget and the guild check when the
-    /// guild allowlist narrows scope.
+    /// flag, the protected-channel guard, the channel allowlist, the budget and
+    /// the guild check when the guild allowlist narrows scope.
+    ///
+    /// `protect` is set by tools that edit the channel itself. Protection is a
+    /// hard local stop: it applies to an allowlisted channel too, and it is
+    /// checked before the budget so a refusal costs no action.
     async fn channel_mutation<T>(
         &self,
         action: &'static str,
         channel_id: &ChannelId,
         dry_run: bool,
+        protect: bool,
         body: impl Future<Output = Result<T, AppError>>,
     ) -> Result<MutationOutcome<T>, AppError> {
         let target = AuditTarget::for_channel(*channel_id);
         self.policy
             .check_tool(action)
             .inspect_err(|error| self.record_refusal(action, target, error))?;
+        if protect {
+            self.policy
+                .check_protected_channel(channel_id)
+                .inspect_err(|error| self.record_refusal(action, target, error))?;
+        }
         self.policy
             .check_channel(channel_id)
             .inspect_err(|error| self.record_refusal(action, target, error))?;

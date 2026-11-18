@@ -6,7 +6,7 @@
 //! influence: nothing in this module reads a message.
 
 use crate::config::schema::PolicyConfig;
-use crate::discord::ids::{ChannelId, GuildId};
+use crate::discord::ids::{ChannelId, GuildId, RoleId};
 use crate::error::AppError;
 
 /// Inserted into a mention so Discord neither resolves nor notifies it.
@@ -165,6 +165,10 @@ pub struct Policy {
     guilds: Vec<GuildId>,
     /// Sorted and de-duplicated; empty means "no channel restriction".
     channels: Vec<ChannelId>,
+    /// Channels no tool may edit or delete, independent of the allowlist.
+    protected_channels: Vec<ChannelId>,
+    /// Roles no tool may edit or delete, independent of the guild allowlist.
+    protected_roles: Vec<RoleId>,
     max_messages_per_read: u16,
     max_message_characters: u16,
     allow_mass_mentions: bool,
@@ -172,6 +176,7 @@ pub struct Policy {
     control_enabled: bool,
     administrative_enabled: bool,
     action_budget: u16,
+    send_budget: u16,
     max_bulk_delete: u16,
     require_dry_run: Vec<String>,
 }
@@ -213,6 +218,16 @@ impl Policy {
                 &config.channel_allowlist,
                 ChannelId::parse,
             )?,
+            protected_channels: parse_ids(
+                "policy.protected_channels",
+                &config.protected_channels,
+                ChannelId::parse,
+            )?,
+            protected_roles: parse_ids(
+                "policy.protected_roles",
+                &config.protected_roles,
+                RoleId::parse,
+            )?,
             max_messages_per_read: config.max_messages_per_read,
             max_message_characters: config.max_message_characters,
             allow_mass_mentions: config.allow_mass_mentions,
@@ -220,6 +235,7 @@ impl Policy {
             control_enabled: config.control_enabled,
             administrative_enabled: config.administrative_enabled,
             action_budget: config.autonomy.max_actions_per_minute,
+            send_budget: config.autonomy.max_sends_per_channel_per_minute,
             max_bulk_delete: config.autonomy.max_bulk_delete,
             require_dry_run,
         })
@@ -289,6 +305,31 @@ impl Policy {
     /// Mutating actions permitted in any rolling minute.
     pub const fn action_budget(&self) -> u16 {
         self.action_budget
+    }
+
+    /// Messages one channel may receive per rolling minute.
+    pub const fn send_budget(&self) -> u16 {
+        self.send_budget
+    }
+
+    /// Whether a channel is protected from edit and deletion.
+    pub fn check_protected_channel(&self, channel_id: &ChannelId) -> Result<(), AppError> {
+        if self.protected_channels.binary_search(channel_id).is_ok() {
+            return Err(AppError::policy_blocked(format!(
+                "channel {channel_id} is protected by policy.protected_channels and cannot be edited or deleted"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Whether a role is protected from edit and deletion.
+    pub fn check_protected_role(&self, role_id: &RoleId) -> Result<(), AppError> {
+        if self.protected_roles.binary_search(role_id).is_ok() {
+            return Err(AppError::policy_blocked(format!(
+                "role {role_id} is protected by policy.protected_roles and cannot be edited or deleted"
+            )));
+        }
+        Ok(())
     }
 
     /// Largest accepted bulk-delete batch.

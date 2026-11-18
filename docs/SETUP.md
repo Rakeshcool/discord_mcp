@@ -261,12 +261,16 @@ Settings that matter most (see `config/default.toml` for every key):
 | `policy.write_enabled` | `false` | Send, edit, reactions and pins; requires a channel allowlist |
 | `policy.control_enabled` | `false` | Message deletion, channels, overwrites, threads and invites; requires a channel allowlist |
 | `policy.administrative_enabled` | `false` | Bulk delete and the role tools; requires a guild allowlist |
-| `policy.autonomy.max_actions_per_minute` | `30` | Rolling per-minute budget shared by the 22 `dry_run`-capable mutations |
+| `policy.autonomy.max_actions_per_minute` | `30` | Rolling per-minute budget shared by every mutation, sends included |
+| `policy.autonomy.max_sends_per_channel_per_minute` | `5` | Messages one channel may receive per rolling minute |
+| `policy.autonomy.budget_state_file` | unset | File carrying the budget across restarts; unset uses `%LOCALAPPDATA%\discord-mcp\action-budget.json`. One running instance owns it; a second instance with mutations enabled fails startup |
 | `policy.autonomy.max_bulk_delete` | `50` | Largest accepted bulk-delete batch; Discord's own ceiling is 100 |
 | `policy.autonomy.require_dry_run` | `[]` | Tools that refuse a real call unless called with `dry_run: true` |
 | `server.transport` | `stdio` | `stdio`, `http`, or `both` |
 | `policy.read_enabled` | `true` | Turn the read tools on |
 | `policy.guild_allowlist` | `[]` | Empty means every guild the bot can see. List guild IDs to narrow it |
+| `policy.protected_channels` | `[]` | Channel IDs no tool may edit, delete, overwrite or thread-edit, even when allowlisted |
+| `policy.protected_roles` | `[]` | Role IDs no tool may edit or delete, even when allowlisted |
 | `policy.max_messages_per_read` | `100` | Page-size ceiling; a larger `limit` argument is refused |
 | `policy.max_concurrent_requests` | `8` | Caps concurrent Discord requests |
 | `discord.request_timeout_seconds` | `20` | Per Discord call |
@@ -355,20 +359,27 @@ control_enabled = true
 administrative_enabled = true
 channel_allowlist = ["1572365820133118035"]   # #general
 guild_allowlist = ["1572365819281932408"]     # test_mcp_server
+protected_channels = []                      # e.g. [#announcements ID]
+protected_roles = []                         # e.g. [@admin role ID]
 
 [policy.autonomy]
 max_actions_per_minute = 30
+max_sends_per_channel_per_minute = 5
 max_bulk_delete = 50
 require_dry_run = ["discord_delete_channel"]   # optional
 ```
 
 `discord_send_message` can then post to those channels and no others; the other
-mutations act on the same allowlisted scope. What applies to every real attempt:
+mutations act on the same allowlisted scope. IDs in `protected_channels` or
+`protected_roles` are refused by the editing and deleting tools even when
+allowlisted, before the budget is spent. What applies to every real attempt:
 mentions in content are neutralised (a zero-width space is inserted) and the
 request carries an empty mention parse list; the body is limited by
-`policy.max_message_characters` in characters; the mutation draws on the shared
-rolling budget (`max_actions_per_minute`) except `discord_send_message`, which has
-no dry-run form; and exactly one audit record is written to stderr (`allowed`,
+`policy.max_message_characters` in characters; every mutation, including
+`discord_send_message`, draws on the shared rolling budget
+(`max_actions_per_minute`), sends also draw on their channel's
+`max_sends_per_channel_per_minute`, and the window is persisted so a restart does
+not reset it; and exactly one audit record is written to stderr (`allowed`,
 `denied` or `failed` with a category). No mutation is retried after an ambiguous
 outcome, because a retried `POST` may already have applied. A `403` means the bot
 lacks the Discord permission (§2.4) or cannot reach the target, and it surfaces
@@ -637,6 +648,7 @@ real binary, but a specific client's launch behaviour is unverified here.
 | Tool result `RESOURCE_NOT_FOUND` / `404` | Wrong ID, or the bot cannot see that channel | Re-read `discord_list_channels` |
 | Tool result `POLICY_BLOCKED` | Guild/channel not in the allowlist, reads disabled, or the class flag off | Adjust `policy.*` |
 | `POLICY_BLOCKED: … max_actions_per_minute … is exhausted` | More real mutations than the rolling budget allows | Wait out the minute, or raise the budget deliberately |
+| `POLICY_BLOCKED: … max_sends_per_channel_per_minute … is exhausted` | Too many messages to one channel in a minute | Wait out the minute, or raise the per-channel cap |
 | `POLICY_BLOCKED: … must be called with dry_run = true` | The tool is listed in `policy.autonomy.require_dry_run` | Call it with `dry_run: true`, or remove it from the list |
 | `PERMISSION_DENIED` with `50013` on a role tool | Missing Manage Roles, or the role sits at/above the bot's highest role | See §2.4; move the bot's role higher |
 | HTTP `401` | Missing/wrong bearer token | Check `DISCORD_MCP_HTTP_TOKEN` and the client header |
@@ -663,8 +675,13 @@ Exit codes: `0` success, `1` internal failure, `2` usage/configuration error,
   without it. `policy.allow_mass_mentions` must stay `false` (validation refuses
   `true`).
 - Keep `policy.autonomy.max_actions_per_minute` modest; it is the blast-radius
-  cap for an autonomous loop. Use `policy.autonomy.require_dry_run` for the
-  tools whose real call you want a human to plan first.
+  cap for an autonomous loop, and `max_sends_per_channel_per_minute` keeps one
+  channel from absorbing it. The persisted budget file is what stops a restart
+  from clearing the window, and only one running instance may own it: a second
+  instance with mutations enabled refuses to start. Give each concurrently
+  running instance its own `budget_state_file`; those windows are independent
+  limits, not one shared cap. Use `policy.autonomy.require_dry_run` for the tools
+  whose real call you want a human to plan first.
 - Grant the bot only the Discord permissions for the classes you enable (§2.4),
   and keep the bot's role above every role it must manage. Its own highest role
   cannot be edited, deleted or removed from it, by design.

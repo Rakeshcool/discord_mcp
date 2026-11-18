@@ -4,6 +4,7 @@
 //! checking an error message: it shows no request could have reached Discord.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -705,6 +706,20 @@ fn default_gate(fake: Arc<FakeDiscord>) -> PolicyGate {
     )
 }
 
+/// A fresh budget state path, unique to this test process and name.
+fn temp_budget_path(name: &str) -> PathBuf {
+    let directory =
+        std::env::temp_dir().join(format!("discord-mcp-budget-{}-{name}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("create the budget directory");
+    directory.join("action-budget.json")
+}
+
+fn remove_budget_file(path: &Path) {
+    if let Some(directory) = path.parent() {
+        std::fs::remove_dir_all(directory).ok();
+    }
+}
+
 #[tokio::test]
 async fn read_disabled_blocks_every_operation() {
     let fake = Arc::new(FakeDiscord::new());
@@ -1366,6 +1381,188 @@ async fn the_shared_budget_refuses_a_burst() {
 }
 
 #[tokio::test]
+async fn sends_share_the_action_budget() {
+    let fake = Arc::new(FakeDiscord::new());
+    let config = PolicyConfig {
+        autonomy: AutonomyConfig {
+            max_actions_per_minute: 1,
+            ..AutonomyConfig::default()
+        },
+        ..mutation_config()
+    };
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(config),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    gated
+        .send_message(&channel(4), "first")
+        .await
+        .expect("the first send is within budget");
+    let error = gated
+        .send_message(&channel(4), "second")
+        .await
+        .expect_err("a send must consume the shared action budget");
+    assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+    assert!(
+        error.message().contains("max_actions_per_minute"),
+        "got {error}"
+    );
+    assert_eq!(fake.calls().len(), 1, "only the allowed send may be made");
+}
+
+#[tokio::test]
+async fn sends_have_their_own_per_channel_budget() {
+    let fake = Arc::new(FakeDiscord::new());
+    let config = PolicyConfig {
+        autonomy: AutonomyConfig {
+            max_actions_per_minute: 20,
+            max_sends_per_channel_per_minute: 1,
+            ..AutonomyConfig::default()
+        },
+        channel_allowlist: vec!["4".to_string(), "5".to_string()],
+        ..mutation_config()
+    };
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(config),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    gated
+        .send_message(&channel(4), "first")
+        .await
+        .expect("the first send to a channel is allowed");
+    let error = gated
+        .send_message(&channel(4), "second")
+        .await
+        .expect_err("the per-channel send limit must refuse the second send");
+    assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+    assert!(
+        error.message().contains("max_sends_per_channel_per_minute"),
+        "got {error}"
+    );
+    gated
+        .send_message(&channel(5), "other channel")
+        .await
+        .expect("another channel has its own send budget");
+    assert_eq!(fake.calls().len(), 2, "two sends were allowed");
+}
+
+#[tokio::test]
+async fn the_rolling_budget_survives_a_restart() {
+    let path = temp_budget_path("restart");
+    let fake = Arc::new(FakeDiscord::new());
+    let discord: Arc<dyn DiscordApi> = fake.clone();
+    let config = PolicyConfig {
+        autonomy: AutonomyConfig {
+            max_actions_per_minute: 2,
+            max_sends_per_channel_per_minute: 1,
+            ..AutonomyConfig::default()
+        },
+        channel_allowlist: vec!["4".to_string(), "5".to_string(), "6".to_string()],
+        ..mutation_config()
+    };
+
+    let first = PolicyGate::with_budget_file(
+        discord.clone(),
+        policy(config.clone()),
+        Arc::new(RecordingAudit::default()),
+        path.clone(),
+    )
+    .expect("a missing state file starts an empty window");
+    first
+        .send_message(&channel(4), "before restart")
+        .await
+        .expect("the first send is within budget");
+    drop(first);
+
+    let second = PolicyGate::with_budget_file(
+        discord.clone(),
+        policy(config),
+        Arc::new(RecordingAudit::default()),
+        path.clone(),
+    )
+    .expect("the persisted window loads");
+
+    let channel_error = second
+        .send_message(&channel(4), "same channel after restart")
+        .await
+        .expect_err("the per-channel window must survive the restart");
+    assert_eq!(channel_error.category(), ErrorCategory::PolicyBlocked);
+    assert!(
+        channel_error
+            .message()
+            .contains("max_sends_per_channel_per_minute"),
+        "got {channel_error}"
+    );
+
+    second
+        .send_message(&channel(5), "another channel")
+        .await
+        .expect("another channel still has its own budget");
+    let shared_error = second
+        .send_message(&channel(6), "a third send")
+        .await
+        .expect_err("the shared window must survive the restart");
+    assert_eq!(shared_error.category(), ErrorCategory::PolicyBlocked);
+    assert!(
+        shared_error.message().contains("max_actions_per_minute"),
+        "got {shared_error}"
+    );
+    assert_eq!(
+        fake.calls().len(),
+        2,
+        "only the pre-restart send and the other channel's send were made"
+    );
+
+    remove_budget_file(&path);
+}
+
+#[tokio::test]
+async fn a_second_instance_cannot_own_the_budget_file() {
+    let path = temp_budget_path("ownership");
+    let fake = Arc::new(FakeDiscord::new());
+    let config = mutation_config();
+    let discord: Arc<dyn DiscordApi> = fake.clone();
+
+    let first = PolicyGate::with_budget_file(
+        discord.clone(),
+        policy(config.clone()),
+        Arc::new(RecordingAudit::default()),
+        path.clone(),
+    )
+    .expect("the first owner takes the lock");
+
+    let error = PolicyGate::with_budget_file(
+        discord.clone(),
+        policy(config.clone()),
+        Arc::new(RecordingAudit::default()),
+        path.clone(),
+    )
+    .expect_err("a second live instance must not share the file");
+    assert_eq!(error.category(), ErrorCategory::Configuration);
+    assert!(error.message().contains("already owned"), "got {error}");
+    assert!(
+        error.message().contains("budget_state_file"),
+        "the refusal must name the setting to change: {error}"
+    );
+
+    drop(first);
+    let third = PolicyGate::with_budget_file(
+        discord,
+        policy(config),
+        Arc::new(RecordingAudit::default()),
+        path.clone(),
+    )
+    .expect("the lock is released with its owner");
+    drop(third);
+
+    remove_budget_file(&path);
+}
+
+#[tokio::test]
 async fn a_dry_run_reaches_no_discord_request() {
     let fake = Arc::new(FakeDiscord::new());
     let gated = gate(
@@ -1849,6 +2046,145 @@ async fn an_invite_dry_run_sends_no_request() {
 
     assert_eq!(outcome, MutationOutcome::Planned);
     assert!(fake.calls().is_empty(), "a dry run must send nothing");
+}
+
+#[tokio::test]
+async fn protected_channels_refuse_edit_delete_and_overwrites() {
+    let fake = Arc::new(FakeDiscord::new());
+    let config = PolicyConfig {
+        protected_channels: vec!["4".to_string(), "9".to_string()],
+        channel_allowlist: vec!["4".to_string(), "5".to_string()],
+        autonomy: AutonomyConfig {
+            max_actions_per_minute: 1,
+            ..AutonomyConfig::default()
+        },
+        ..mutation_config()
+    };
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(config),
+        Arc::new(RecordingAudit::default()),
+    );
+    let spec = ChannelEdit {
+        name: Some("renamed".to_string()),
+        ..ChannelEdit::default()
+    };
+
+    let errors = [
+        gated
+            .edit_channel(&channel(4), &spec, false)
+            .await
+            .expect_err("a protected channel cannot be edited"),
+        gated
+            .edit_channel(&channel(4), &spec, true)
+            .await
+            .expect_err("a dry run still reports the protected refusal"),
+        gated
+            .delete_channel(&channel(4), false)
+            .await
+            .expect_err("a protected channel cannot be deleted"),
+        gated
+            .set_permission_overwrite(
+                &channel(4),
+                OverwriteTarget::Role(RoleId::from_u64(7)),
+                PermissionBits::default(),
+                PermissionBits::default(),
+                false,
+            )
+            .await
+            .expect_err("a protected channel's overwrites are protected too"),
+        gated
+            .delete_permission_overwrite(
+                &channel(4),
+                OverwriteTarget::Role(RoleId::from_u64(7)),
+                false,
+            )
+            .await
+            .expect_err("a protected channel's overwrites are protected too"),
+        gated
+            .edit_thread(&channel(9), Some(true), None, false)
+            .await
+            .expect_err("a protected thread cannot be edited"),
+    ];
+
+    for error in errors {
+        assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+        assert!(
+            error.message().contains("policy.protected_channels"),
+            "got {error}"
+        );
+    }
+    assert!(
+        fake.calls().is_empty(),
+        "protection must be decided before any request: {:?}",
+        fake.calls()
+    );
+
+    // The refusals spent no budget: with a one-action window, an unprotected
+    // allowlisted channel can still be edited.
+    gated
+        .edit_channel(&channel(5), &spec, false)
+        .await
+        .expect("an unprotected channel is still editable");
+    assert_eq!(fake.calls(), vec![Call::EditChannel(5)]);
+}
+
+#[tokio::test]
+async fn protected_roles_refuse_edit_and_delete() {
+    let fake = Arc::new(FakeDiscord::new());
+    let config = PolicyConfig {
+        protected_roles: vec!["7".to_string()],
+        autonomy: AutonomyConfig {
+            max_actions_per_minute: 1,
+            ..AutonomyConfig::default()
+        },
+        ..administration_config()
+    };
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(config),
+        Arc::new(RecordingAudit::default()),
+    );
+    let role = RoleId::from_u64(7);
+    let spec = RoleEdit {
+        name: Some("renamed".to_string()),
+        ..RoleEdit::default()
+    };
+
+    let errors = [
+        gated
+            .edit_role(&guild(1), &role, &spec, false)
+            .await
+            .expect_err("a protected role cannot be edited"),
+        gated
+            .edit_role(&guild(1), &role, &spec, true)
+            .await
+            .expect_err("a dry run still reports the protected refusal"),
+        gated
+            .delete_role(&guild(1), &role, false)
+            .await
+            .expect_err("a protected role cannot be deleted"),
+    ];
+
+    for error in errors {
+        assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+        assert!(
+            error.message().contains("policy.protected_roles"),
+            "got {error}"
+        );
+    }
+    assert!(
+        fake.calls().is_empty(),
+        "protection must be decided before any request: {:?}",
+        fake.calls()
+    );
+
+    // The refusals spent no budget: the one action can still edit another role.
+    gated
+        .edit_role(&guild(1), &RoleId::from_u64(8), &spec, false)
+        .await
+        .expect("an unprotected role is still editable");
+    assert_eq!(fake.calls().last(), Some(&Call::EditRole(1, 8)));
 }
 
 #[tokio::test]

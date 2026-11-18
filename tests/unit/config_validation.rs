@@ -319,6 +319,19 @@ max_actions_per_minute = {value}
         );
     }
 
+    for value in ["0", "601"] {
+        let message = rejection(&format!(
+            "[policy]
+[policy.autonomy]
+max_sends_per_channel_per_minute = {value}
+"
+        ));
+        assert!(
+            message.contains("policy.autonomy.max_sends_per_channel_per_minute"),
+            "unexpected message: {message}"
+        );
+    }
+
     for value in ["1", "101"] {
         let message = rejection(&format!(
             "[policy]
@@ -331,6 +344,35 @@ max_bulk_delete = {value}
             "unexpected message: {message}"
         );
     }
+}
+
+#[test]
+fn protected_ids_must_be_snowflakes() {
+    for field in ["protected_channels", "protected_roles"] {
+        let message = rejection(&format!(
+            "[policy]
+{field} = [\"not-an-id\"]
+"
+        ));
+        assert!(
+            message.contains(&format!("policy.{field}")),
+            "unexpected message: {message}"
+        );
+    }
+}
+
+#[test]
+fn an_empty_budget_state_file_is_rejected() {
+    let message = rejection(
+        "[policy]
+[policy.autonomy]
+budget_state_file = \"\"
+",
+    );
+    assert!(
+        message.contains("policy.autonomy.budget_state_file"),
+        "unexpected message: {message}"
+    );
 }
 
 #[test]
@@ -372,6 +414,10 @@ fn mutation_classes_are_off_by_default() {
     assert!(!config.policy.control_enabled);
     assert!(!config.policy.administrative_enabled);
     assert_eq!(config.policy.autonomy.max_actions_per_minute, 30);
+    assert_eq!(config.policy.autonomy.max_sends_per_channel_per_minute, 5);
     assert_eq!(config.policy.autonomy.max_bulk_delete, 50);
     assert!(config.policy.autonomy.require_dry_run.is_empty());
+    assert_eq!(config.policy.autonomy.budget_state_file, None);
+    assert!(config.policy.protected_channels.is_empty());
+    assert!(config.policy.protected_roles.is_empty());
 }

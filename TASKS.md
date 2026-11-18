@@ -178,7 +178,7 @@ Everything below is implemented and tested on the branch; this is its gate.
 - [x] Ten structure/control tools: `discord_delete_message`, channels (create/edit/delete), permission overwrites (set/delete), threads (create/edit) and invites (create/delete).
 - [x] Six administrative tools: `discord_bulk_delete_messages` and five role tools (create, edit, delete, assign, remove). `ADMINISTRATOR` cannot be granted, role names are 1–100 characters locally, and `@everyone` is refused for delete, assign and remove.
 - [x] Three mutation classes, each off by default and each requiring its own allowlist: `write_enabled` (channel), `control_enabled` (channel), `administrative_enabled` (guild).
-- [x] Shared rolling budget (`policy.autonomy.max_actions_per_minute`) across the 22 `dry_run`-capable mutations; `discord_send_message` is outside it because it has no dry-run form.
+- [x] Shared rolling budget (`policy.autonomy.max_actions_per_minute`) across every mutation, including `discord_send_message`, plus a per-channel send cap (`max_sends_per_channel_per_minute`); the window is persisted to `budget_state_file` so a restart cannot reset it.
 - [x] `policy.autonomy.require_dry_run`: named tools refuse a real call; an unclassified name is a configuration error.
 - [x] `dry_run` on every mutation except `discord_send_message`: all local checks, no Discord request, no budget, no audit record.
 - [x] Exactly one content-free audit record per real mutation attempt (`allowed`, `denied`, `failed`); reads record allowances and policy denials.
@@ -186,9 +186,11 @@ Everything below is implemented and tested on the branch; this is its gate.
 - [x] Remote scope resolved before spending an action: a thread through its parent channel, an invite through its channel, roles through the hierarchy.
 - [x] Bulk delete: 2–`max_bulk_delete` distinct IDs, none older than 14 days, checked from the snowflake without a request.
 - [x] `--read-only` / `DISCORD_MCP_READ_ONLY=1` disables all three mutation classes for the session.
+- [x] `policy.protected_channels` and `policy.protected_roles`: edit/delete/overwrite/thread-edit refusals enforced before the budget and independent of the allowlists.
+- [x] Budget state file has a single process owner, enforced by an exclusive lock; a second instance with mutations enabled fails startup, and read-only instances do not open it.
 - [x] Removed the unused `policy.require_confirmation_for_destructive` setting; configuration rejects it, and the docs describe `dry_run` plus allowlists as the approval model.
 - [x] Documentation updated against the code: `README.md`, `docs/TOOLS.md`, `docs/SETUP.md`, `docs/SECURITY.md`, `CHANGELOG.md`.
-- [x] All 222 tests pass (17 lib, 50 integration, 34 protocol, 121 unit).
+- [x] All 230 tests pass (17 lib, 50 integration, 34 protocol, 129 unit).
 - [x] `cargo fmt --all --check` passes.
 - [x] `cargo clippy --all-targets --all-features -- -D warnings` passes.
 - [x] Live role-tool checks in the test guild: create/edit/delete/assign/remove, dry runs, `@everyone` refusals, `ADMINISTRATOR` refusal, and above-bot calls returning `403` / `50013`.
