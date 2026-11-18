@@ -297,23 +297,42 @@ and disconnect recovery; event replay after a reconnect (resumption) is not.
 
 ## Phase 10 — Release gate
 
-These are signed off against the release artifact, not the working tree, so they
-stay open until Phases 7–9 land. Several already hold at the current commit and
-will be re-run then: 151 tests, `fmt`, Clippy, the release build, token-redaction
-coverage, no self-bot path, writes off by default, mass mentions rejected by
-validation.
+Signed off on 2026-11-18 against the release artifact built from commit `d64ba14`
+with `cargo build --release --locked --target x86_64-pc-windows-msvc` from an
+empty `target/` — not against the working tree.
 
-- [ ] All tests pass.
-- [ ] `cargo fmt --check` passes.
-- [ ] `cargo clippy --all-targets --all-features -- -D warnings` passes.
-- [ ] Windows MSVC release build succeeds.
-- [ ] STDIO protocol output is clean.
-- [ ] HTTP loopback/authentication protections pass.
-- [ ] Token redaction tests pass.
-- [ ] No self-bot or user-token functionality exists.
-- [ ] Write tools are disabled by default.
-- [ ] Mass mentions are disabled by default.
-- [ ] Discord rate limits are respected.
-- [ ] Documentation matches shipped behavior.
+- [x] All tests pass. 151 tests: 13 library, 30 integration (real twilight client
+      against a local mock Discord), 24 protocol (the real binary as a child
+      process, plus HTTP refusals and session lifecycle), 84 unit.
+- [x] `cargo fmt --check` passes. `cargo fmt --all --check` exits 0.
+- [x] `cargo clippy --all-targets --all-features -- -D warnings` passes. Exit 0
+      with no warnings.
+- [x] Windows MSVC release build succeeds. From a cleaned tree,
+      `x86_64-pc-windows-msvc` release build finished in 2m57s producing an
+      11.6 MB executable.
+- [x] STDIO protocol output is clean. `initialize` plus `tools/list` produced two
+      stdout frames, both parsing as JSON-RPC 2.0, with zero non-JSON lines; all
+      eight log lines went to stderr.
+- [x] HTTP loopback/authentication protections pass. Against the artifact: no
+      token `401`, wrong token `401`, foreign `Host` `403`, foreign `Origin` `403`,
+      correct token `200` with a session id, `GET /health` `401` then `200` with
+      the status JSON.
+- [x] Token redaction tests pass. Seven redaction tests cover `Bot`/`Bearer`
+      shapes, header and JSON key values, and the panic path.
+- [x] No self-bot or user-token functionality exists. The client is built from
+      the bot token only; there is no user-authorization path and no `Authorization`
+      header built outside the inbound HTTP gate.
+- [x] Write tools are disabled by default. `--validate-config` on the shipped
+      defaults prints `write tools are disabled`, `policy.write_enabled = false`,
+      and validation refuses enabling it with an empty channel allowlist.
+- [x] Mass mentions are disabled by default. `policy.allow_mass_mentions = false`,
+      validation rejects `true`, and the write path neutralises mentions and sends
+      an empty mention parse list.
+- [x] Discord rate limits are respected. twilight's limiter waits out `429` and
+      resends within the per-call deadline; three tests cover the read retry, the
+      write wait, and the error mapping when a limit cannot be waited out.
+- [x] Documentation matches shipped behavior. `docs/TOOLS.md` was re-checked
+      claim by claim against the code, and the version, nine-tool surface and
+      status codes match what this artifact reports.
 
 **Release decision:** Do not ship if any security or protocol acceptance criterion is unmet.

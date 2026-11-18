@@ -198,6 +198,11 @@ channels, and only when writes are deliberately enabled.
   built in this workspace. A second build of the same commit produced different
   bytes, so the checksum is an artifact identifier, not a reproducible-build
   claim.
+- Release gate (Phase 10) signed off against the clean release artifact: 151
+  tests, `fmt`, Clippy, a from-scratch MSVC release build, protocol-clean STDIO
+  output, the HTTP refusals (`401`, `401`, `403`, `403`), writes and mass mentions
+  off by default, rate-limit handling, and documentation re-checked against the
+  code. Nothing is published.
 - Read tools exercised end to end against a real guild over both transports,
   including non-empty message text after enabling the intent, and the HTTP gate
   checked by hand (`401`, `401`, `403`, `403`, `200`, `202`, `400`).
