@@ -36,9 +36,10 @@ Notable changes to `discord-mcp`, grouped by capability rather than by commit â€
   Permissions are named, never raw bits, and `ADMINISTRATOR` cannot be granted;
   editing a role's permissions replaces the whole set. `@everyone` is refused for
   delete and assignment before a request is built. Editing or deleting the bot's
-  own highest role is refused unconditionally, so the guard cannot be configured
-  away; the check needs the bot's membership and the guild's role list, so it runs
-  on a real call and not on a dry run.
+  own highest role, or removing it from the bot's own membership, is refused
+  unconditionally, so the guard cannot be configured away; the check needs the
+  bot's membership and the guild's role list, so it runs on a real call and not on
+  a dry run.
 
 ## v0.1.0 â€” 2026-11-18
 
