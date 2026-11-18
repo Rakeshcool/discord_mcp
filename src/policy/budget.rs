@@ -80,6 +80,12 @@ impl ActionBudget {
     /// the window cannot be read or owned, starting anyway would silently reset
     /// it or share it with another process.
     pub(crate) fn load(path: PathBuf) -> Result<Self, AppError> {
+        create_parent(&path).map_err(|error| {
+            AppError::configuration(format!(
+                "could not create the action budget directory for {}: {error}",
+                path.display()
+            ))
+        })?;
         let lock = acquire_ownership(&path)?;
         let persistence = Persistence { path, _lock: lock };
 
@@ -196,16 +202,12 @@ impl ActionBudget {
             AppError::internal(format!("could not encode the action budget: {error}"))
         })?;
 
-        if let Some(parent) = persistence.path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            fs::create_dir_all(parent).map_err(|error| {
-                AppError::internal(format!(
-                    "could not create the action budget directory {}: {error}; no action was sent",
-                    parent.display()
-                ))
-            })?;
-        }
+        create_parent(&persistence.path).map_err(|error| {
+            AppError::internal(format!(
+                "could not create the action budget directory for {}: {error}; no action was sent",
+                persistence.path.display()
+            ))
+        })?;
         let temporary = sidecar(&persistence.path, "tmp");
         fs::write(&temporary, &bytes).map_err(|error| {
             AppError::internal(format!(
@@ -252,6 +254,18 @@ fn acquire_ownership(path: &Path) -> Result<File, AppError> {
             "could not lock the action budget at {}: {error}",
             path.display()
         ))),
+    }
+}
+
+/// Create the state file's parent directory when it has one.
+///
+/// This runs before the ownership lock is opened: a lock file in a directory
+/// that does not exist cannot be created, and a fresh install must not fail just
+/// because its per-user directory is absent yet.
+fn create_parent(path: &Path) -> std::io::Result<()> {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => fs::create_dir_all(parent),
+        _ => Ok(()),
     }
 }
 

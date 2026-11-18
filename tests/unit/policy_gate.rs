@@ -1563,6 +1563,40 @@ async fn a_second_instance_cannot_own_the_budget_file() {
 }
 
 #[tokio::test]
+async fn a_missing_budget_directory_is_created_at_startup() {
+    let root = std::env::temp_dir().join(format!(
+        "discord-mcp-budget-{}-nested-startup",
+        std::process::id()
+    ));
+    std::fs::remove_dir_all(&root).ok();
+    let path = root.join("missing").join("action-budget.json");
+    assert!(
+        !root.exists(),
+        "the test must start with no budget directory"
+    );
+
+    let gated = PolicyGate::with_budget_file(
+        Arc::new(FakeDiscord::new()),
+        policy(mutation_config()),
+        Arc::new(RecordingAudit::default()),
+        path.clone(),
+    )
+    .expect("startup must create the budget directory before taking its lock");
+    drop(gated);
+
+    assert!(
+        path.parent().expect("a parent directory").is_dir(),
+        "startup must create the state file's parent"
+    );
+    assert!(
+        path.with_file_name(".action-budget.json.lock").is_file(),
+        "the ownership lock belongs beside the state file in the created directory"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
 async fn a_dry_run_reaches_no_discord_request() {
     let fake = Arc::new(FakeDiscord::new());
     let gated = gate(
