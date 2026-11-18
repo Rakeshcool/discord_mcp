@@ -345,6 +345,12 @@ to Discord bits, and `ADMINISTRATOR` cannot be granted. Discord still enforces
 role hierarchy and refuses managed roles; a refusal surfaces as
 `PERMISSION_DENIED`.
 
+The bot's **own highest role** is protected unconditionally: editing or deleting
+it would strip the bot's access, so `discord_edit_role` and `discord_delete_role`
+refuse it and there is no setting that turns the guard off. Finding that role
+needs the bot's membership and the guild's role list, so the guard runs on a real
+call and is skipped on a dry run, like the other remote-scope checks.
+
 ### `discord_create_role`
 
 `guild_id`, `name`, and optionally `permissions` (names such as `VIEW_CHANNEL`;

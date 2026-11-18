@@ -78,6 +78,27 @@ fn role() -> &'static str {
         "mentionable":true,"flags":0}"#
 }
 
+fn role_with(id: &str, position: i64) -> String {
+    format!(
+        r#"{{"id":"{id}","name":"role-{id}","color":0,
+            "colors":{{"primary_color":0,"secondary_color":null,"tertiary_color":null}},
+            "hoist":false,"position":{position},"permissions":"0","managed":false,
+            "mentionable":false,"flags":0}}"#
+    )
+}
+
+fn bot_user() -> &'static str {
+    r#"{"id":"9999","username":"bot","discriminator":"0","bot":true,
+        "avatar":null,"global_name":null,"public_flags":0,"mfa_enabled":false}"#
+}
+
+fn bot_member() -> &'static str {
+    r#"{"user":{"id":"9999","username":"bot","discriminator":"0","bot":true,
+        "avatar":null,"global_name":null,"public_flags":0,"mfa_enabled":false},
+        "nick":null,"roles":["7007"],"joined_at":"2024-01-02T03:04:05.000000+00:00",
+        "deaf":false,"mute":false,"flags":0,"pending":false}"#
+}
+
 fn message(id: &str, content: &str) -> String {
     format!(
         r#"{{"id":"{id}","channel_id":"{CHANNEL_ID}","guild_id":"{GUILD_ID}",
@@ -1066,6 +1087,34 @@ async fn edit_role_patches_only_the_fields_given() {
     )
     .await
     .expect("the role must be edited");
+}
+
+#[tokio::test]
+async fn bot_highest_role_picks_the_top_role_the_bot_holds() {
+    let mock = MockDiscord::start(|request| match request.route() {
+        "/api/v10/users/@me" => MockResponse::json(bot_user()),
+        "/api/v10/guilds/2002/members/9999" => MockResponse::json(bot_member()),
+        "/api/v10/guilds/2002/roles" => MockResponse::json(format!(
+            "[{},{},{}]",
+            role_with("2002", 0),
+            role_with("7007", 2),
+            role_with("8008", 5)
+        )),
+        other => panic!("unexpected route: {other}"),
+    })
+    .await;
+    let api = adapter_for(&mock);
+
+    let highest = api
+        .bot_highest_role(&GuildId::parse(GUILD_ID).expect("valid guild id"))
+        .await
+        .expect("the bot's roles must load");
+
+    assert_eq!(
+        highest,
+        Some(RoleId::parse("7007").expect("valid role id")),
+        "the highest role the bot actually holds, not the guild's highest role"
+    );
 }
 
 #[tokio::test]
