@@ -2076,6 +2076,106 @@ async fn editing_another_role_still_reaches_discord() {
 }
 
 #[tokio::test]
+async fn removing_the_bots_highest_role_from_itself_is_refused() {
+    let fake = Arc::new(FakeDiscord::new().with_bot_role(1, 7));
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(administration_config()),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    let error = gated
+        .remove_role(
+            &guild(1),
+            &UserId::from_u64(99),
+            &RoleId::from_u64(7),
+            false,
+        )
+        .await
+        .expect_err("the bot's own highest role is protected from removal too");
+
+    assert_eq!(error.category(), ErrorCategory::PolicyBlocked);
+    assert!(error.message().contains("highest role"), "got {error}");
+    assert_eq!(
+        fake.calls(),
+        vec![Call::BotIdentity, Call::BotHighestRole(1)],
+        "the removal must not be sent"
+    );
+}
+
+#[tokio::test]
+async fn removing_the_bots_highest_role_from_a_member_is_allowed() {
+    let fake = Arc::new(FakeDiscord::new().with_bot_role(1, 7));
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(administration_config()),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    gated
+        .remove_role(&guild(1), &UserId::from_u64(9), &RoleId::from_u64(7), false)
+        .await
+        .expect("another member losing the role is not a lockout risk");
+
+    assert_eq!(
+        fake.calls(),
+        vec![Call::BotIdentity, Call::RemoveRole(1, 9, 7)],
+        "the bot's role list is not needed for another member"
+    );
+}
+
+#[tokio::test]
+async fn removing_another_role_from_the_bot_is_allowed() {
+    let fake = Arc::new(FakeDiscord::new().with_bot_role(1, 7));
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(administration_config()),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    gated
+        .remove_role(
+            &guild(1),
+            &UserId::from_u64(99),
+            &RoleId::from_u64(8),
+            false,
+        )
+        .await
+        .expect("only the highest role is a lockout risk");
+
+    assert_eq!(
+        fake.calls(),
+        vec![
+            Call::BotIdentity,
+            Call::BotHighestRole(1),
+            Call::RemoveRole(1, 99, 8)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_remove_dry_run_skips_the_bot_role_guard() {
+    let fake = Arc::new(FakeDiscord::new().with_bot_role(1, 7));
+    let gated = gate(
+        Arc::clone(&fake),
+        policy(administration_config()),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    let outcome = gated
+        .remove_role(&guild(1), &UserId::from_u64(99), &RoleId::from_u64(7), true)
+        .await
+        .expect("a dry run reports the local decision");
+
+    assert_eq!(outcome, MutationOutcome::Planned);
+    assert!(
+        fake.calls().is_empty(),
+        "a dry run must not resolve the bot's roles: {:?}",
+        fake.calls()
+    );
+}
+
+#[tokio::test]
 async fn a_role_dry_run_skips_the_bot_role_guard() {
     let fake = Arc::new(FakeDiscord::new().with_bot_role(1, 7));
     let gated = gate(

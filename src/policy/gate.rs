@@ -823,8 +823,8 @@ impl DiscordApi for PolicyGate {
         self.role_mutation(
             "discord_edit_role",
             guild_id,
-            role_id,
             dry_run,
+            self.authorize_role_target(guild_id, role_id),
             async move {
                 let outcome = self.inner.edit_role(guild_id, role_id, spec, false).await?;
                 applied(outcome)
@@ -842,8 +842,8 @@ impl DiscordApi for PolicyGate {
         self.role_mutation(
             "discord_delete_role",
             guild_id,
-            role_id,
             dry_run,
+            self.authorize_role_target(guild_id, role_id),
             async move {
                 let outcome = self.inner.delete_role(guild_id, role_id, false).await?;
                 applied(outcome)
@@ -876,13 +876,19 @@ impl DiscordApi for PolicyGate {
         role_id: &RoleId,
         dry_run: bool,
     ) -> Result<MutationOutcome<()>, AppError> {
-        self.guild_mutation("discord_remove_role", guild_id, dry_run, async move {
-            let outcome = self
-                .inner
-                .remove_role(guild_id, user_id, role_id, false)
-                .await?;
-            applied(outcome)
-        })
+        self.role_mutation(
+            "discord_remove_role",
+            guild_id,
+            dry_run,
+            self.authorize_role_removal(guild_id, user_id, role_id),
+            async move {
+                let outcome = self
+                    .inner
+                    .remove_role(guild_id, user_id, role_id, false)
+                    .await?;
+                applied(outcome)
+            },
+        )
         .await
     }
 
@@ -928,19 +934,20 @@ impl PolicyGate {
         .await
     }
 
-    /// Role edits and deletions additionally refuse the bot's own highest role.
+    /// Role edits, deletions and removals additionally refuse to touch the bot's
+    /// own highest role.
     ///
     /// Changing or removing that role can strip the bot's permissions, so the
     /// guard is unconditional rather than a setting that a deployment could
-    /// turn off and then lock itself out with. The lookup needs requests, so it
-    /// runs for a real attempt only; a dry run reports the local decision, as
-    /// other remote-scope checks do.
+    /// turn off and then lock itself out with. The lookups need requests, so
+    /// the guard runs for a real attempt only; a dry run reports the local
+    /// decision, as other remote-scope checks do.
     async fn role_mutation<T>(
         &self,
         action: &'static str,
         guild_id: &GuildId,
-        role_id: &RoleId,
         dry_run: bool,
+        guard: impl Future<Output = Result<(), AppError>>,
         body: impl Future<Output = Result<T, AppError>>,
     ) -> Result<MutationOutcome<T>, AppError> {
         let target = AuditTarget::for_guild(*guild_id);
@@ -951,7 +958,7 @@ impl PolicyGate {
             .check_guild(guild_id)
             .inspect_err(|error| self.record_refusal(action, target, error))?;
         if !dry_run && !self.policy.requires_dry_run(action) {
-            self.authorize_role_target(guild_id, role_id)
+            guard
                 .await
                 .inspect_err(|error| self.record_refusal(action, target, error))?;
         }
@@ -973,6 +980,28 @@ impl PolicyGate {
         if self.inner.bot_highest_role(guild_id).await? == Some(*role_id) {
             return Err(AppError::policy_blocked(format!(
                 "role {role_id} is the bot's own highest role in guild {guild_id}; editing or deleting it would remove the bot's access"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Refuse removing the bot's own highest role from the bot itself.
+    ///
+    /// Removing a role from another member cannot lock the bot out, so the role
+    /// list is only fetched when the target is the bot.
+    async fn authorize_role_removal(
+        &self,
+        guild_id: &GuildId,
+        user_id: &UserId,
+        role_id: &RoleId,
+    ) -> Result<(), AppError> {
+        let _permit = self.permit().await?;
+        if self.inner.bot_identity().await?.id != *user_id {
+            return Ok(());
+        }
+        if self.inner.bot_highest_role(guild_id).await? == Some(*role_id) {
+            return Err(AppError::policy_blocked(format!(
+                "role {role_id} is the bot's own highest role in guild {guild_id}; removing it from the bot would remove its access"
             )));
         }
         Ok(())

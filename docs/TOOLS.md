@@ -346,10 +346,13 @@ role hierarchy and refuses managed roles; a refusal surfaces as
 `PERMISSION_DENIED`.
 
 The bot's **own highest role** is protected unconditionally: editing or deleting
-it would strip the bot's access, so `discord_edit_role` and `discord_delete_role`
-refuse it and there is no setting that turns the guard off. Finding that role
-needs the bot's membership and the guild's role list, so the guard runs on a real
-call and is skipped on a dry run, like the other remote-scope checks.
+it would strip the bot's access, and removing it from the bot's own membership
+would do the same, so `discord_edit_role`, `discord_delete_role` and
+`discord_remove_role` refuse it. There is no setting that turns the guard off.
+Finding that role needs the bot's membership and the guild's role list, so the
+guard runs on a real call and is skipped on a dry run, like the other
+remote-scope checks. `discord_remove_role` only fetches the role list when the
+target member is the bot itself.
 
 ### `discord_create_role`
 
@@ -375,7 +378,8 @@ has is a no-op on Discord's side. `@everyone` cannot be assigned.
 
 ### `discord_remove_role`
 
-`guild_id`, `user_id`, `role_id`. Idempotent. `@everyone` cannot be removed.
+`guild_id`, `user_id`, `role_id`. Idempotent. `@everyone` cannot be removed, and
+the bot's own highest role cannot be removed from the bot.
 
 ## 6. Resource
 
