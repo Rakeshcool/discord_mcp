@@ -185,7 +185,7 @@ search or a full-history export.
 | `scan_limit` | integer | no | Newest messages inspected **per channel**, 1–1000; default `policy.max_messages_per_read` (100) |
 
 ```json
-{"guild_id":"1572365819281932408","user_id":"1572365819281932399","items":[{"id":"1300000000000000001","channel_id":"1572365820133118035","guild_id":"1572365819281932408","author":{"id":"1572365819281932399","username":"example","bot":false},"content":"hello","timestamp":"2026-11-18T09:12:44.000000+00:00","edited_timestamp":null,"attachment_count":0}],"channels":[{"channel_id":"1572365820133118035","name":"general","kind":"text","scanned":42,"matched":1,"has_more":false}],"scanned_messages":42,"truncated":false}
+{"guild_id":"1572365819281932408","user_id":"1572365819281932399","items":[{"id":"1300000000000000001","channel_id":"1572365820133118035","guild_id":"1572365819281932408","author":{"id":"1572365819281932399","username":"example","bot":false},"content":"hello","timestamp":"2026-11-18T09:12:44.000000+00:00","edited_timestamp":null,"attachment_count":0}],"channels":[{"channel_id":"1572365820133118035","name":"general","kind":"text","scanned":42,"matched":1,"has_more":false}],"scanned_messages":42,"truncated":false,"requests_made":1,"global_truncated":false}
 ```
 
 - Requires **View Channels** and **Read Message History**. Only channels the
@@ -194,19 +194,27 @@ search or a full-history export.
   and category channels are skipped. `discord_list_channels` shows what is
   visible; a channel absent there cannot be scanned.
 - `scan_limit` is per channel, and pages are bounded by
-  `policy.max_messages_per_read`. A large `scan_limit` over many channels means
-  many sequential requests; `discord_get_user_messages` does not use the write
-  action budget.
+  `policy.max_messages_per_read`. A scan issues at most **50** history requests;
+  `discord_get_user_messages` does not use the write action budget.
 - Each matching message has the same shape as a `discord_get_messages` item and
   is subject to the same `content: null` caveat.
-- `channels` reports what each attempted channel contributed. `has_more` means
-  the per-channel scan stopped at `scan_limit` while older messages may remain.
-  A channel that returns `PERMISSION_DENIED`, `RESOURCE_NOT_FOUND` or another
-  error appears with its `error` string and does not abort the other channels.
-- `truncated` is `true` when the overall `limit` stopped the scan before every
-  eligible channel was examined.
-- This is not an exhaustive history search and message order follows the channel
-  scan, newest first within each channel.
+- `channels` reports what each attempted channel contributed. `matched` counts
+  matching messages seen in that channel's scanned window, even if the global
+  result cap later dropped one. `has_more` means the per-channel scan stopped at
+  `scan_limit`, or the global request cap stopped it, while older messages may
+  remain. A channel that returns `PERMISSION_DENIED`, `RESOURCE_NOT_FOUND` or
+  another error appears with its `error` string and does not abort the other
+  channels.
+- `truncated` is `true` when more matching messages were found than the global
+  `limit` could return. The scan keeps visiting eligible channels past that
+  result cap, until every channel is visited or the request cap is reached.
+- `requests_made` reports how many channel-history requests the call issued,
+  from 0 to 50. `global_truncated` is `true` when the 50-request cap was reached
+  before every eligible channel was visited or before a channel's `scan_limit`
+  was exhausted. Channels not listed in `channels` were not examined.
+- This is not an exhaustive history search. Matching messages are ordered
+  newest-first across channels, and `limit` bounds the returned set, not how many
+  channels are scanned.
 
 ### `discord_get_message`
 

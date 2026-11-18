@@ -8,10 +8,13 @@ Notable changes to `discord-mcp`, grouped by capability rather than by commit â€
 - **`discord_get_user_messages`.** Collects recent messages by one author across
   every visible text and announcement channel in a guild, since Discord exposes
   no bot search endpoint. It scans at most `scan_limit` newest messages per
-  channel (default 100), returns at most `limit` matches (default 50), skips
-  channels outside `policy.channel_allowlist`, and reports per-channel failures
-  without aborting the rest of the scan. This is a bounded history scan, not a
-  full-history export.
+  channel (default 100), visits every eligible channel even after finding
+  `limit` matches, and returns the newest `limit` matches (default 50) globally.
+  One call issues at most 50 history requests; a cap stop is reported as
+  `global_truncated`, with `requests_made` and per-channel `has_more` showing
+  what was not examined. It skips channels outside `policy.channel_allowlist` and
+  reports per-channel failures without aborting the rest of the scan. This is a
+  bounded history scan, not a full-history export.
 
 ## Unreleased â€” server control, slice 1
 
