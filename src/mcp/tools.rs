@@ -250,7 +250,6 @@ struct CapabilityReport {
     bot: crate::discord::models::BotIdentity,
     enabled: EnabledClasses,
     limits: AutonomyLimits,
-    protected: ProtectedResources,
     #[serde(skip_serializing_if = "Option::is_none")]
     guild_permissions: Option<crate::discord::models::GuildPermissions>,
 }
@@ -260,7 +259,6 @@ struct EnabledClasses {
     read: bool,
     write: bool,
     control: bool,
-    moderation: bool,
     administrative: bool,
 }
 
@@ -268,14 +266,7 @@ struct EnabledClasses {
 struct AutonomyLimits {
     max_actions_per_minute: u16,
     max_bulk_delete: u16,
-    protect_bot_role: bool,
     require_dry_run: Vec<String>,
-}
-
-#[derive(Serialize)]
-struct ProtectedResources {
-    role_ids: Vec<String>,
-    user_ids: Vec<String>,
 }
 
 /// Run a handler body, turning every application failure into a tool result.
@@ -490,7 +481,7 @@ impl DiscordMcpServer {
 
     #[tool(
         name = "discord_get_capabilities",
-        description = "Report which tool classes local policy enables, the autonomy limits in force, protected IDs, and — when a guild_id is given — the permissions the bot actually holds there. Use this before planning a change.",
+        description = "Report which tool classes local policy enables, the autonomy limits in force, and — when a guild_id is given — the permissions the bot actually holds there. Use this before planning a change.",
         annotations(read_only_hint = true)
     )]
     async fn discord_get_capabilities(
@@ -514,18 +505,12 @@ impl DiscordMcpServer {
                     read: policy.read_enabled,
                     write: policy.write_enabled,
                     control: policy.control_enabled,
-                    moderation: policy.moderation_enabled,
                     administrative: policy.administrative_enabled,
                 },
                 limits: AutonomyLimits {
                     max_actions_per_minute: policy.autonomy.max_actions_per_minute,
                     max_bulk_delete: policy.autonomy.max_bulk_delete,
-                    protect_bot_role: policy.autonomy.protect_bot_role,
                     require_dry_run: policy.autonomy.require_dry_run.clone(),
-                },
-                protected: ProtectedResources {
-                    role_ids: policy.protected.role_ids.clone(),
-                    user_ids: policy.protected.user_ids.clone(),
                 },
                 guild_permissions,
             })

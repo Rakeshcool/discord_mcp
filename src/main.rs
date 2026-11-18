@@ -172,7 +172,6 @@ fn run() -> Result<ExitCode, AppError> {
 fn apply_read_only(config: &mut Config) {
     config.policy.write_enabled = false;
     config.policy.control_enabled = false;
-    config.policy.moderation_enabled = false;
     config.policy.administrative_enabled = false;
 }
 

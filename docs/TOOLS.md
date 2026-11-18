@@ -50,7 +50,6 @@ covers the threat model.
 | `policy.autonomy.max_actions_per_minute` (default 30) | Shared budget across all mutations; the request past it is `POLICY_BLOCKED` and is never sent |
 | `policy.autonomy.max_bulk_delete` (default 50) | Ceiling for one `discord_bulk_delete_messages` call, on top of Discord's 100 and 14-day rules |
 | `policy.autonomy.require_dry_run` | Tools listed here refuse unless called with `dry_run: true` |
-| `policy.protected.role_ids` / `user_ids` | Reserved for the role and moderation packs; parsed and validated now |
 | `policy.guild_allowlist` | When non-empty: guild tools refuse unlisted guilds, channel tools resolve the channel's guild first (one extra request) and refuse it when unlisted, and a direct-message channel is refused because its guild cannot be shown to be allowed |
 | `policy.channel_allowlist` | When non-empty: channel tools refuse unlisted channels. Enabling writes requires it to be non-empty |
 | `policy.max_messages_per_read` | Ceiling for `discord_get_messages.limit` |
@@ -67,16 +66,15 @@ refusing, so a guild allowlist cannot be inferred from the listing.
 ### `discord_get_capabilities`
 
 Reports what this build may do before a client plans a change: which classes
-policy enables, the autonomy limits, the protected IDs, and — when `guild_id` is
-given — the permissions the bot holds in that guild, computed from `@everyone`
-plus its roles.
+policy enables, the autonomy limits, and — when `guild_id` is given — the
+permissions the bot holds in that guild, computed from `@everyone` plus its roles.
 
 | Argument | Type | Required | Notes |
 |---|---|---|---|
 | `guild_id` | string | no | Adds `guild_permissions` for that guild |
 
 ```json
-{"server":"discord-mcp","version":"0.1.0","bot":{"id":"…","username":"discord-mcp"},"enabled":{"read":true,"write":false,"control":false,"moderation":false,"administrative":false},"limits":{"max_actions_per_minute":30,"max_bulk_delete":50,"protect_bot_role":true,"require_dry_run":[]},"protected":{"role_ids":[],"user_ids":[]}}
+{"server":"discord-mcp","version":"0.1.0","bot":{"id":"…","username":"discord-mcp"},"enabled":{"read":true,"write":false,"control":false,"administrative":false},"limits":{"max_actions_per_minute":30,"max_bulk_delete":50,"require_dry_run":[]}}
 ```
 
 `guild_permissions` is guild-level: channel overwrites are not applied, so a

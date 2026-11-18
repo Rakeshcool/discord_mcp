@@ -177,14 +177,10 @@ pub struct PolicyConfig {
     pub max_concurrent_requests: u16,
     /// Enable channel, role and invite control tools.
     pub control_enabled: bool,
-    /// Enable member-moderation tools (kick, ban, timeout).
-    pub moderation_enabled: bool,
     /// Enable guild-administration tools (settings, automod, bulk delete).
     pub administrative_enabled: bool,
     /// Limits that apply when a tool mutates the server.
     pub autonomy: AutonomyConfig,
-    /// Identifiers no tool may modify.
-    pub protected: ProtectedConfig,
 }
 
 impl Default for PolicyConfig {
@@ -200,10 +196,8 @@ impl Default for PolicyConfig {
             allow_mass_mentions: false,
             max_concurrent_requests: 8,
             control_enabled: false,
-            moderation_enabled: false,
             administrative_enabled: false,
             autonomy: AutonomyConfig::default(),
-            protected: ProtectedConfig::default(),
         }
     }
 }
@@ -219,8 +213,6 @@ pub struct AutonomyConfig {
     pub max_actions_per_minute: u16,
     /// Largest accepted bulk-delete batch.
     pub max_bulk_delete: u16,
-    /// Refuse to edit or reorder the bot's own highest role.
-    pub protect_bot_role: bool,
     /// Tools that must be called with `dry_run = true`.
     pub require_dry_run: Vec<String>,
 }
@@ -230,23 +222,9 @@ impl Default for AutonomyConfig {
         Self {
             max_actions_per_minute: 30,
             max_bulk_delete: 50,
-            protect_bot_role: true,
             require_dry_run: Vec::new(),
         }
     }
-}
-
-/// `[policy.protected]`
-///
-/// Resources even a destructive tool may not touch. The guild owner and the
-/// bot's own top role are protected regardless; these are additional.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, default)]
-pub struct ProtectedConfig {
-    /// Role IDs no tool may edit, delete or assign.
-    pub role_ids: Vec<String>,
-    /// User IDs no moderation tool may target.
-    pub user_ids: Vec<String>,
 }
 
 /// `[logging]`
@@ -475,18 +453,14 @@ impl PolicyConfig {
                 "must list at least one channel ID when policy.control_enabled is true",
             ));
         }
-        if (self.moderation_enabled || self.administrative_enabled)
-            && self.guild_allowlist.is_empty()
-        {
+        if self.administrative_enabled && self.guild_allowlist.is_empty() {
             return Err(ConfigError::invalid(
                 "policy.guild_allowlist",
-                "must list at least one guild ID when policy.moderation_enabled or policy.administrative_enabled is true",
+                "must list at least one guild ID when policy.administrative_enabled is true",
             ));
         }
         validate_allowlist("policy.guild_allowlist", &self.guild_allowlist)?;
         validate_allowlist("policy.channel_allowlist", &self.channel_allowlist)?;
-        validate_allowlist("policy.protected.role_ids", &self.protected.role_ids)?;
-        validate_allowlist("policy.protected.user_ids", &self.protected.user_ids)?;
 
         if !(1..=600).contains(&self.autonomy.max_actions_per_minute) {
             return Err(ConfigError::invalid(
