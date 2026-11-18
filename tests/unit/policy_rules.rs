@@ -1,7 +1,7 @@
 //! Policy rules: classification, allowlists, limits and mention neutralisation.
 
 use discord_mcp::config::Config;
-use discord_mcp::config::schema::PolicyConfig;
+use discord_mcp::config::schema::{AutonomyConfig, PolicyConfig};
 use discord_mcp::discord::ids::{ChannelId, GuildId};
 use discord_mcp::error::ErrorCategory;
 use discord_mcp::policy::rules::{Policy, ToolRisk, classify_tool, sanitize_mentions};
@@ -67,6 +67,21 @@ fn destructive_and_administrative_tools_have_their_own_classes() {
     );
     assert_eq!(ToolRisk::Destructive.as_str(), "destructive");
     assert_eq!(ToolRisk::Administrative.as_str(), "administrative");
+}
+
+#[test]
+fn a_dry_run_entry_must_name_a_classified_tool() {
+    let error = Policy::from_config(&PolicyConfig {
+        autonomy: AutonomyConfig {
+            require_dry_run: vec!["discord_grid_clear".to_string()],
+            ..AutonomyConfig::default()
+        },
+        ..PolicyConfig::default()
+    })
+    .expect_err("an unknown tool name would make the setting silently inert");
+
+    assert_eq!(error.category(), ErrorCategory::Configuration);
+    assert!(error.message().contains("require_dry_run"), "got {error}");
 }
 
 #[test]

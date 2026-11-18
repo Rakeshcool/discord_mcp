@@ -170,6 +170,23 @@ impl Policy {
     /// cannot parse its own allowlist is a configuration failure, and silently
     /// treating it as empty would widen authority instead of narrowing it.
     pub fn from_config(config: &PolicyConfig) -> Result<Self, AppError> {
+        // A name that is not a tool would make `require_dry_run` silently inert,
+        // so it is a configuration error rather than a no-op.
+        let require_dry_run = config
+            .autonomy
+            .require_dry_run
+            .iter()
+            .map(|tool| {
+                let name = tool.trim();
+                if classify_tool(name).is_none() {
+                    return Err(AppError::configuration(format!(
+                        "policy.autonomy.require_dry_run names `{name}`, which is not a tool this build classifies"
+                    )));
+                }
+                Ok(name.to_string())
+            })
+            .collect::<Result<Vec<_>, AppError>>()?;
+
         Ok(Self {
             read_enabled: config.read_enabled,
             write_enabled: config.write_enabled,
@@ -192,12 +209,7 @@ impl Policy {
             administrative_enabled: config.administrative_enabled,
             action_budget: config.autonomy.max_actions_per_minute,
             max_bulk_delete: config.autonomy.max_bulk_delete,
-            require_dry_run: config
-                .autonomy
-                .require_dry_run
-                .iter()
-                .map(|tool| tool.trim().to_string())
-                .collect(),
+            require_dry_run,
         })
     }
 

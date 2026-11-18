@@ -27,8 +27,8 @@ use tracing::Instrument;
 use crate::discord::client::{DiscordApi, MutationOutcome};
 use crate::discord::ids::{ChannelId, GuildId, MessageId, UserId};
 use crate::discord::models::{
-    BotIdentity, ChannelSummary, GuildDetail, GuildPermissions, GuildSummary, MemberSummary,
-    MessageQuery, MessageSummary, Page,
+    BotIdentity, ChannelSummary, GuildDetail, GuildSummary, MemberSummary, MessageQuery,
+    MessageSummary, Page,
 };
 use crate::error::{AppError, ErrorCategory};
 use crate::policy::audit::{AuditEvent, AuditSink, AuditTarget};
@@ -100,10 +100,6 @@ impl PolicyGate {
         body: impl Future<Output = Result<T, AppError>>,
     ) -> Result<MutationOutcome<T>, AppError> {
         if dry_run {
-            self.audit.record(
-                &AuditEvent::allowed(action, target)
-                    .with_correlation(crate::observability::correlation::current()),
-            );
             return Ok(MutationOutcome::Planned);
         }
         if self.policy.requires_dry_run(action) {
@@ -398,20 +394,6 @@ impl DiscordApi for PolicyGate {
         .await
     }
 
-    async fn guild_permissions(&self, guild_id: &GuildId) -> Result<GuildPermissions, AppError> {
-        self.run(
-            "discord_get_capabilities",
-            AuditTarget::for_guild(*guild_id),
-            async {
-                self.policy.check_read_enabled()?;
-                self.policy.check_guild(guild_id)?;
-                let _permit = self.permit().await?;
-                self.inner.guild_permissions(guild_id).await
-            },
-        )
-        .await
-    }
-
     async fn send_message(
         &self,
         channel_id: &ChannelId,
@@ -538,7 +520,7 @@ impl DiscordApi for PolicyGate {
         emoji: &str,
         dry_run: bool,
     ) -> Result<MutationOutcome<()>, AppError> {
-        self.reaction_mutation("discord_add_reaction", channel_id, dry_run, async move {
+        self.message_mutation("discord_add_reaction", channel_id, dry_run, async move {
             applied(
                 self.inner
                     .add_reaction(channel_id, message_id, emoji, false)
@@ -555,7 +537,7 @@ impl DiscordApi for PolicyGate {
         emoji: &str,
         dry_run: bool,
     ) -> Result<MutationOutcome<()>, AppError> {
-        self.reaction_mutation("discord_remove_reaction", channel_id, dry_run, async move {
+        self.message_mutation("discord_remove_reaction", channel_id, dry_run, async move {
             applied(
                 self.inner
                     .remove_reaction(channel_id, message_id, emoji, false)
@@ -571,7 +553,7 @@ impl DiscordApi for PolicyGate {
         message_id: &MessageId,
         dry_run: bool,
     ) -> Result<MutationOutcome<()>, AppError> {
-        self.reaction_mutation("discord_clear_reactions", channel_id, dry_run, async move {
+        self.message_mutation("discord_clear_reactions", channel_id, dry_run, async move {
             applied(
                 self.inner
                     .clear_reactions(channel_id, message_id, false)
@@ -587,7 +569,7 @@ impl DiscordApi for PolicyGate {
         message_id: &MessageId,
         dry_run: bool,
     ) -> Result<MutationOutcome<()>, AppError> {
-        self.reaction_mutation("discord_pin_message", channel_id, dry_run, async move {
+        self.message_mutation("discord_pin_message", channel_id, dry_run, async move {
             applied(
                 self.inner
                     .pin_message(channel_id, message_id, false)
@@ -603,7 +585,7 @@ impl DiscordApi for PolicyGate {
         message_id: &MessageId,
         dry_run: bool,
     ) -> Result<MutationOutcome<()>, AppError> {
-        self.reaction_mutation("discord_unpin_message", channel_id, dry_run, async move {
+        self.message_mutation("discord_unpin_message", channel_id, dry_run, async move {
             applied(
                 self.inner
                     .unpin_message(channel_id, message_id, false)
@@ -617,7 +599,7 @@ impl DiscordApi for PolicyGate {
 impl PolicyGate {
     /// Message-scoped mutations share one preamble: write flag, allowlist,
     /// concurrency permit, guild check when the guild allowlist narrows scope.
-    async fn reaction_mutation(
+    async fn message_mutation(
         &self,
         action: &'static str,
         channel_id: &ChannelId,

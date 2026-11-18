@@ -15,8 +15,8 @@ use discord_mcp::discord::DiscordApi;
 use discord_mcp::discord::client::MutationOutcome;
 use discord_mcp::discord::ids::{ChannelId, GuildId, MessageId, UserId};
 use discord_mcp::discord::models::{
-    BotIdentity, ChannelKind, ChannelSummary, GuildDetail, GuildPermissions, GuildSummary,
-    MemberSummary, MessageAuthor, MessageQuery, MessageSummary, Page,
+    BotIdentity, ChannelKind, ChannelSummary, GuildDetail, GuildSummary, MemberSummary,
+    MessageAuthor, MessageQuery, MessageSummary, Page,
 };
 use discord_mcp::error::{AppError, ErrorCategory};
 use discord_mcp::policy::audit::{AuditEvent, AuditOutcome, AuditSink, AuditTarget};
@@ -43,7 +43,6 @@ enum Call {
     Pin(u64, u64),
     Unpin(u64, u64),
     BotIdentity,
-    GuildPermissions(u64),
 }
 
 #[derive(Debug)]
@@ -258,15 +257,6 @@ impl DiscordApi for FakeDiscord {
         Ok(BotIdentity {
             id: UserId::from_u64(99),
             username: "test-bot".to_string(),
-        })
-    }
-
-    async fn guild_permissions(&self, guild_id: &GuildId) -> Result<GuildPermissions, AppError> {
-        self.record(Call::GuildPermissions(guild_id.get())).await?;
-        Ok(GuildPermissions {
-            guild_id: *guild_id,
-            permissions: vec!["SEND_MESSAGES".to_string()],
-            administrator: false,
         })
     }
 

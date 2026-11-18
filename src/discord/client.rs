@@ -15,8 +15,8 @@ use async_trait::async_trait;
 
 use crate::discord::ids::{ChannelId, GuildId, MessageId, UserId};
 use crate::discord::models::{
-    BotIdentity, ChannelSummary, GuildDetail, GuildPermissions, GuildSummary, MemberSummary,
-    MessageQuery, MessageSummary, Page,
+    BotIdentity, ChannelSummary, GuildDetail, GuildSummary, MemberSummary, MessageQuery,
+    MessageSummary, Page,
 };
 use crate::error::AppError;
 
@@ -91,9 +91,6 @@ pub trait DiscordApi: Send + Sync + std::fmt::Debug {
 
     /// The bot account behind the token.
     async fn bot_identity(&self) -> Result<BotIdentity, AppError>;
-
-    /// The bot's guild-level permissions, computed from its roles.
-    async fn guild_permissions(&self, guild_id: &GuildId) -> Result<GuildPermissions, AppError>;
 
     /// Send one message to a channel.
     ///

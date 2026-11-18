@@ -18,21 +18,6 @@ pub struct BotIdentity {
     pub username: String,
 }
 
-/// The permissions the bot holds in one guild, by name.
-///
-/// Computed from the `@everyone` role plus the roles the bot's member object
-/// carries. Channel overwrites are not applied: this is the guild-level answer
-/// a client needs in order to plan, not a per-channel permission check.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct GuildPermissions {
-    /// Guild these permissions were computed in.
-    pub guild_id: GuildId,
-    /// Names of the permissions held, in Discord's bit order.
-    pub permissions: Vec<String>,
-    /// Whether `ADMINISTRATOR` is among them, which implies the rest.
-    pub administrator: bool,
-}
-
 /// One guild the bot is a member of.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GuildSummary {

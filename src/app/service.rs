@@ -97,12 +97,6 @@ impl AppService {
                 warnings.push(format!("{name} tools are ENABLED"));
             }
         }
-        if config.policy.autonomy.max_actions_per_minute < 60 {
-            warnings.push(format!(
-                "mutation budget is {} action(s) per minute",
-                config.policy.autonomy.max_actions_per_minute
-            ));
-        }
         if !config.logging.redact_message_content {
             warnings.push(
                 "message content logging is enabled; Discord message bodies will appear in logs"

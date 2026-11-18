@@ -130,10 +130,7 @@ pub struct SendMessageArgs {
 /// Arguments for `discord_get_capabilities`.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct GetCapabilitiesArgs {
-    /// Guild ID to compute the bot's permissions in. Omit for configuration only.
-    pub guild_id: Option<String>,
-}
+pub struct GetCapabilitiesArgs {}
 
 /// Arguments for `discord_edit_message`.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -250,8 +247,6 @@ struct CapabilityReport {
     bot: crate::discord::models::BotIdentity,
     enabled: EnabledClasses,
     limits: AutonomyLimits,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    guild_permissions: Option<crate::discord::models::GuildPermissions>,
 }
 
 #[derive(Serialize)]
@@ -481,22 +476,17 @@ impl DiscordMcpServer {
 
     #[tool(
         name = "discord_get_capabilities",
-        description = "Report which tool classes local policy enables, the autonomy limits in force, and — when a guild_id is given — the permissions the bot actually holds there. Use this before planning a change.",
+        description = "Report which tool classes local policy enables and the autonomy limits in force, so a client can plan inside them.",
         annotations(read_only_hint = true)
     )]
     async fn discord_get_capabilities(
         &self,
-        Parameters(args): Parameters<GetCapabilitiesArgs>,
+        Parameters(_args): Parameters<GetCapabilitiesArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         Ok(tool_call("discord_get_capabilities", async {
-            let guild_id = parse_optional(&args.guild_id, GuildId::parse)?;
             let state = self.state();
             let policy = &state.config().policy;
             let bot = state.discord().bot_identity().await?;
-            let guild_permissions = match guild_id {
-                Some(guild_id) => Some(state.discord().guild_permissions(&guild_id).await?),
-                None => None,
-            };
             Ok(CapabilityReport {
                 server: state.config().server.name.clone(),
                 version: state.config().server.version.clone(),
@@ -512,7 +502,6 @@ impl DiscordMcpServer {
                     max_bulk_delete: policy.autonomy.max_bulk_delete,
                     require_dry_run: policy.autonomy.require_dry_run.clone(),
                 },
-                guild_permissions,
             })
         })
         .await)
