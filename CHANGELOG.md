@@ -162,6 +162,9 @@ channels, and only when writes are deliberately enabled.
   stream), 13 library unit tests.
 - `cargo fmt --all --check`, `cargo clippy --all-targets --all-features --
   -D warnings` and `cargo build --release` (`x86_64-pc-windows-msvc`) pass.
+- `cargo-audit 0.23.0` against the committed `Cargo.lock`: 204 crates, 0
+  vulnerabilities, 1 unmaintained-crate warning (`chrono`, reached through
+  `rmcp`/`schemars`, no fixed version). Recorded in `docs/DEPENDENCIES.md`.
 - Read tools exercised end to end against a real guild over both transports,
   including non-empty message text after enabling the intent, and the HTTP gate
   checked by hand (`401`, `401`, `403`, `403`, `200`, `202`, `400`).

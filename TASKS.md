@@ -229,11 +229,11 @@ and disconnect recovery; event replay after a reconnect (resumption) is not.
       a `500` on a write are each sent exactly once and surface the error
       (`a_timed_out_write_is_never_resent`, `a_server_error_on_a_write_is_not_retried`),
       and a write rejected with `403` is not retried either.
-- [ ] Review dependency vulnerabilities and update policy. *(policy is written
-      in `docs/DEPENDENCIES.md`: exact pins, a committed lock file, `cargo audit`
-      before each release. `cargo audit` is not installed in this environment, so
-      no advisory scan has been run against this tree — the scan is the remaining
-      work, not the policy)*
+- [x] Review dependency vulnerabilities and update policy. `cargo-audit 0.23.0`
+      was installed and run against the committed lock file: 204 crates, 0
+      vulnerabilities, 1 warning (`chrono` unmaintained via `rmcp`/`schemars`, no
+      fixed version). Recorded with its reachability and review trigger in
+      `docs/DEPENDENCIES.md`, not suppressed.
 
 **Exit criteria:** Operational diagnostics are useful without leaking credentials or message content.
 
