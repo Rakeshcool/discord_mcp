@@ -5,15 +5,15 @@ Notable changes to `discord-mcp`, grouped by capability rather than by commit â€
 
 ## Unreleased â€” server control, slice 1
 
-- **Capability model.** `policy.control_enabled`, `policy.moderation_enabled`
-  and `policy.administrative_enabled` join `write_enabled` as separate opt-ins,
-  each with its own allowlist requirement. `[policy.autonomy]` adds a shared
-  per-minute action budget, a bulk-delete ceiling, bot-role protection and a
-  `require_dry_run` list; `[policy.protected]` reserves role and user IDs.
+- **Capability model.** `policy.control_enabled` and
+  `policy.administrative_enabled` join `write_enabled` as separate opt-ins, each
+  with its own allowlist requirement. `[policy.autonomy]` adds a shared
+  per-minute action budget, a bulk-delete ceiling and a `require_dry_run` list.
   `--read-only` and `DISCORD_MCP_READ_ONLY=1` disable every mutation class at
-  startup without touching the file.
-- **`discord_get_capabilities`.** Reports enabled classes, limits, protected IDs
-  and the bot's guild-level permissions, so a client plans within its rights.
+  startup without touching the file. Moderation and protected-ID settings are
+  deliberately absent until the tools that enforce them exist.
+- **`discord_get_capabilities`.** Reports enabled classes, limits and the bot's
+  guild-level permissions, so a client plans within its rights.
 - **Message mutations.** `discord_edit_message`, `discord_delete_message`,
   `discord_bulk_delete_messages`, the three reaction tools and the two pin tools.
   Every mutation takes `dry_run`, is never retried after an ambiguous outcome,

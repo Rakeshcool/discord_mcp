@@ -6,7 +6,7 @@
 //! influence: nothing in this module reads a message.
 
 use crate::config::schema::PolicyConfig;
-use crate::discord::ids::{ChannelId, GuildId, RoleId, UserId};
+use crate::discord::ids::{ChannelId, GuildId};
 use crate::error::AppError;
 
 /// Inserted into a mention so Discord neither resolves nor notifies it.
@@ -157,14 +157,10 @@ pub struct Policy {
     allow_mass_mentions: bool,
     max_concurrent_requests: u16,
     control_enabled: bool,
-    moderation_enabled: bool,
     administrative_enabled: bool,
     action_budget: u16,
     max_bulk_delete: u16,
-    protect_bot_role: bool,
     require_dry_run: Vec<String>,
-    protected_roles: Vec<RoleId>,
-    protected_users: Vec<UserId>,
 }
 
 impl Policy {
@@ -193,27 +189,15 @@ impl Policy {
             allow_mass_mentions: config.allow_mass_mentions,
             max_concurrent_requests: config.max_concurrent_requests,
             control_enabled: config.control_enabled,
-            moderation_enabled: config.moderation_enabled,
             administrative_enabled: config.administrative_enabled,
             action_budget: config.autonomy.max_actions_per_minute,
             max_bulk_delete: config.autonomy.max_bulk_delete,
-            protect_bot_role: config.autonomy.protect_bot_role,
             require_dry_run: config
                 .autonomy
                 .require_dry_run
                 .iter()
                 .map(|tool| tool.trim().to_string())
                 .collect(),
-            protected_roles: parse_ids(
-                "policy.protected.role_ids",
-                &config.protected.role_ids,
-                RoleId::parse,
-            )?,
-            protected_users: parse_ids(
-                "policy.protected.user_ids",
-                &config.protected.user_ids,
-                UserId::parse,
-            )?,
         })
     }
 
@@ -246,17 +230,6 @@ impl Policy {
         } else {
             Err(AppError::policy_blocked(
                 "control tools are disabled by policy.control_enabled",
-            ))
-        }
-    }
-
-    /// Refuse every moderation tool unless `policy.moderation_enabled`.
-    pub fn check_moderation_enabled(&self) -> Result<(), AppError> {
-        if self.moderation_enabled {
-            Ok(())
-        } else {
-            Err(AppError::policy_blocked(
-                "moderation tools are disabled by policy.moderation_enabled",
             ))
         }
     }
@@ -299,24 +272,9 @@ impl Policy {
         self.max_bulk_delete
     }
 
-    /// Whether the bot's own highest role is off limits.
-    pub const fn protect_bot_role(&self) -> bool {
-        self.protect_bot_role
-    }
-
     /// Whether `action` must be called with `dry_run = true`.
     pub fn requires_dry_run(&self, action: &str) -> bool {
         self.require_dry_run.iter().any(|tool| tool == action)
-    }
-
-    /// Whether a role is protected from modification.
-    pub fn is_protected_role(&self, role_id: &RoleId) -> bool {
-        self.protected_roles.binary_search(role_id).is_ok()
-    }
-
-    /// Whether a user is protected from moderation.
-    pub fn is_protected_user(&self, user_id: &UserId) -> bool {
-        self.protected_users.binary_search(user_id).is_ok()
     }
 
     /// Whether a guild allowlist narrows the scope at all.

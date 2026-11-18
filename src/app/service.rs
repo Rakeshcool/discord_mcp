@@ -91,7 +91,6 @@ impl AppService {
         }
         for (enabled, name) in [
             (config.policy.control_enabled, "control"),
-            (config.policy.moderation_enabled, "moderation"),
             (config.policy.administrative_enabled, "administrative"),
         ] {
             if enabled {

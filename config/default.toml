@@ -44,18 +44,12 @@ max_concurrent_requests = 8
 # Mutation classes beyond sending messages. Each is off by default and needs its
 # own allowlist before it can be enabled.
 control_enabled = false                   # channel, role and invite control
-moderation_enabled = false                # kick, ban, timeout
 administrative_enabled = false            # guild settings, automod, bulk delete
 
 [policy.autonomy]
 max_actions_per_minute = 30               # shared budget across all mutations
 max_bulk_delete = 50                      # Discord's own ceiling is 100
-protect_bot_role = true                   # never edit the bot's highest role
 require_dry_run = []                      # tools that must be called with dry_run
-
-[policy.protected]
-role_ids = []                             # roles no tool may edit or assign
-user_ids = []                             # members no tool may moderate
 
 [logging]
 level = "info"                            # trace | debug | info | warn | error

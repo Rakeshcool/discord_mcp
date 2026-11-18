@@ -274,18 +274,16 @@ control_enabled = true
 }
 
 #[test]
-fn moderation_and_administration_require_a_guild_allowlist() {
-    for field in ["moderation_enabled", "administrative_enabled"] {
-        let message = rejection(&format!(
-            "[policy]
-{field} = true
-"
-        ));
-        assert!(
-            message.contains("policy.guild_allowlist"),
-            "`{field}` should require a guild allowlist: {message}"
-        );
-    }
+fn administration_requires_a_guild_allowlist() {
+    let message = rejection(
+        "[policy]
+administrative_enabled = true
+",
+    );
+    assert!(
+        message.contains("policy.guild_allowlist"),
+        "unexpected message: {message}"
+    );
 
     accepted(
         "[policy]
@@ -357,37 +355,12 @@ require_dry_run = [\"discord_delete_message\"]
 }
 
 #[test]
-fn protected_ids_are_validated_as_snowflakes() {
-    for table in ["role_ids", "user_ids"] {
-        let message = rejection(&format!(
-            "[policy]
-[policy.protected]
-{table} = [\"moderator\"]
-"
-        ));
-        assert!(message.contains(table), "unexpected message: {message}");
-    }
-
-    accepted(
-        "[policy]
-[policy.protected]
-role_ids = [\"123456789012345678\"]
-user_ids = [\"123456789012345679\"]
-",
-    );
-}
-
-#[test]
 fn mutation_classes_are_off_by_default() {
     let config = load(None).expect("the built-in defaults must load");
 
     assert!(!config.policy.control_enabled);
-    assert!(!config.policy.moderation_enabled);
     assert!(!config.policy.administrative_enabled);
     assert_eq!(config.policy.autonomy.max_actions_per_minute, 30);
     assert_eq!(config.policy.autonomy.max_bulk_delete, 50);
-    assert!(config.policy.autonomy.protect_bot_role);
     assert!(config.policy.autonomy.require_dry_run.is_empty());
-    assert!(config.policy.protected.role_ids.is_empty());
-    assert!(config.policy.protected.user_ids.is_empty());
 }
