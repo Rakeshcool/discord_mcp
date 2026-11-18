@@ -4,8 +4,9 @@ A Model Context Protocol (MCP) server for Discord, using an **official bot
 identity**. Windows 11 x64 (Rust), over STDIO or Streamable HTTP.
 
 It is not a self-bot, not user-account automation, and not a Discord client. It
-reads through the bot API and can post one message to allowlisted channels when
-you enable writes.
+reads through the bot API and, when each policy class is enabled, sends and
+manages messages, channels, threads, invites and roles — every mutation gated,
+limited, auditable and dry-runnable.
 
 ## Install
 
@@ -74,34 +75,72 @@ or validate stops startup rather than falling back silently.
 The server reads the environment and never reads `.env` itself; `.env.example`
 lists the variable names.
 
-## Writes
+## What it can do
 
-Sending is **off by default**. Turning it on needs both settings, and validation
-refuses the first without the second:
+32 tools, grouped by the policy flag that enables them.
+
+| Area | Tools | Enabled by |
+|---|---|---|
+| Capabilities | `discord_get_capabilities` | always available |
+| Read | `discord_list_guilds`, `discord_get_guild`, `discord_list_channels`, `discord_get_channel`, `discord_get_messages`, `discord_get_message`, `discord_list_members`, `discord_get_member` | `read_enabled` (default on) |
+| Messages | `discord_send_message`, `discord_edit_message`, `discord_add_reaction`, `discord_remove_reaction`, `discord_clear_reactions`, `discord_pin_message`, `discord_unpin_message` | `write_enabled` |
+| Moderation | `discord_delete_message` | `control_enabled` |
+| Moderation | `discord_bulk_delete_messages` | `administrative_enabled` |
+| Structure | `discord_create_channel`, `discord_edit_channel`, `discord_delete_channel`, `discord_set_permission_overwrite`, `discord_delete_permission_overwrite`, `discord_create_thread`, `discord_edit_thread`, `discord_create_invite`, `discord_delete_invite` | `control_enabled` |
+| Roles | `discord_create_role`, `discord_edit_role`, `discord_delete_role`, `discord_assign_role`, `discord_remove_role` | `administrative_enabled` |
+
+`discord_get_capabilities` reports the enabled classes, their limits and the
+authenticated bot, so a client can plan within its rights before calling anything
+else.
+
+### Enabling mutations
+
+Every mutation class is **off by default** and needs its flag plus a non-empty
+allowlist:
+
+| Flag | What it opens | Allowlist |
+|---|---|---|
+| `write_enabled` | send/edit messages, reactions, pins | `channel_allowlist` |
+| `control_enabled` | delete a message, channels, permission overwrites, threads, invites | `channel_allowlist` |
+| `administrative_enabled` | bulk delete, all role tools | `guild_allowlist` |
 
 ```toml
 [policy]
 write_enabled = true
+control_enabled = true
+administrative_enabled = true
 channel_allowlist = ["1572365820133118035"]
+guild_allowlist = ["1572365819281932408"]
 ```
 
-Message editing, reactions and pins follow `write_enabled`; deleting a message
-and every channel, permission, thread and invite tool need `control_enabled`;
-bulk delete and every role tool need `administrative_enabled`; each class has its
-own allowlist requirement. Every mutation is audited, limited by a shared per-minute budget,
-and never retried. `--read-only` (or `DISCORD_MCP_READ_ONLY=1`) overrides the
-file and disables all of them for a session.
+Every mutation accepts `dry_run`, which returns the planned action without
+contacting Discord and without spending budget. Real mutations share
+`policy.autonomy.max_actions_per_minute`, are audited, and are never retried
+after an ambiguous outcome. `policy.autonomy.require_dry_run` can require the
+dry-run step for named tools, and `--read-only` (or `DISCORD_MCP_READ_ONLY=1`)
+turns every mutation class off for a session.
+
+Bulk delete additionally enforces Discord's 2–100 message range, the 14-day
+window and `policy.autonomy.max_bulk_delete`. Mass mentions stay off: parsed
+`@everyone`, `@here`, role and user mentions are not sent as live pings.
 
 Structural tools stay inside the allowlist: a thread is checked through its
 parent channel, an invite through the channel it points at, and a channel these
 tools create must be added to `channel_allowlist` before anything may edit or
-delete it. Role tools are guild-scoped, so `guild_allowlist` is their boundary,
-and editing a role's permissions replaces the whole set rather than merging into
-it. They also need the bot's Discord **Manage Roles** permission, and Discord
-only lets the bot touch roles below its highest role; a missing permission or
-hierarchy refusal is `PERMISSION_DENIED`. The bot's own highest role cannot be
-edited or deleted, unconditionally. A `dry_run` names the action and sends no
-request.
+delete it.
+
+### Roles
+
+Role tools are guild-scoped, so `guild_allowlist` is their boundary. Permission
+names resolve to Discord bits, `ADMINISTRATOR` can never be granted, and editing
+`permissions` replaces the whole set rather than merging into it. Names are
+trimmed and limited to 1–100 characters locally.
+
+They also need the bot's Discord **Manage Roles** permission, and Discord only
+lets the bot touch roles below the bot's highest role; a missing permission or
+hierarchy refusal surfaces as `PERMISSION_DENIED` (`403`, code `50013`). The
+bot's own highest role cannot be edited, deleted, or removed from the bot,
+unconditionally. `@everyone` can be edited but not deleted, assigned or removed.
 
 ## Streamable HTTP
 
