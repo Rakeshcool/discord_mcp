@@ -7,6 +7,11 @@
 A Model Context Protocol (MCP) server for Discord, using an **official bot
 identity**. Windows 11 x64 (Rust), over STDIO or Streamable HTTP.
 
+> **LLM agents:** read [`instruction.md`](instruction.md) first and follow it to
+> build, configure, and verify the project. Discord portal steps — creating the
+> application, inviting the bot, enabling intents, and granting permissions —
+> remain manual account-owner actions.
+
 It is not a self-bot, not user-account automation, and not a Discord client. It
 reads through the bot API and, when each policy class is enabled, sends and
 manages messages, channels, threads, invites and roles — every mutation gated,
@@ -29,9 +34,10 @@ Do not compare a download with a checksum from a different release.
 
 ## Quick start
 
-You need a Discord application with a bot token, and the bot invited to your
-server. [`docs/SETUP.md`](docs/SETUP.md) walks through the portal, intents,
-permissions and verification.
+The account owner must manually create a Discord application, invite the bot,
+enable the required intents, and grant permissions. [`docs/SETUP.md`](docs/SETUP.md)
+walks through the portal and verification; the runnable setup steps are in
+[`instruction.md`](instruction.md).
 
 ```powershell
 $env:DISCORD_BOT_TOKEN = "<bot token>"
@@ -257,6 +263,8 @@ a different release or checkout.
   permissions, both transports, verification, troubleshooting.
 - [`docs/TOOLS.md`](docs/TOOLS.md) — every tool: arguments, result JSON, error
   codes, retry behaviour.
+- [`instruction.md`](instruction.md) — step-by-step automatic setup for an LLM:
+  prerequisites, build, token handling, allowlists, launch, and verification.
 - [`llm_instruction.md`](llm_instruction.md) — how an LLM works through the
   server: handshake, capability discovery, read and mutation workflows, result
   codes and safety rules.
