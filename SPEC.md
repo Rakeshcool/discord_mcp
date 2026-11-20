@@ -1,7 +1,7 @@
 # Discord MCP Server — Production Specification
 
 **Status:** Implementation specification — reflects `feat/user-message-search`
-(39 tools, 29 mutations in four policy classes)
+(40 tools, 29 mutations in four policy classes)
 
 **Target:** Windows 11 x64  
 **Language:** Rust  
@@ -158,7 +158,8 @@ The v1 feature set is intentionally narrow and permission-aware.
 | `discord_list_channels` | List guild channels | Respect bot visibility and permissions |
 | `discord_get_channel` | Get channel metadata | Validate channel access |
 | `discord_get_messages` | Read recent messages from a channel | Bounded page size; bounded embeds, reactions and attachment metadata; only accessible channels |
-| `discord_get_user_messages` | Collect recent messages by one author across visible text channels | Bounded per-channel scan, 50-request global cap; policy-filtered; no Discord search endpoint |
+| `discord_get_user_messages` | Collect recent messages by one author across visible text channels | Bounded per-channel scan, 50-request global cap; `has_attachments` filter; policy-filtered; no Discord search endpoint |
+| `discord_find_abusive_messages` | Scan visible text channels for abuse keywords and group matches by author | Bounded scan, 50-request global cap; conservative defaults or caller-supplied keywords; signals only, never a verdict or automatic action |
 | `discord_get_message` | Fetch one message by channel and message ID | Verify channel access |
 | `discord_list_members` | List members where supported | Require necessary intent/API permissions; bounded pagination |
 | `discord_get_member` | Fetch member metadata | Respect visibility and permissions |
@@ -218,8 +219,15 @@ is rejected by validation and outgoing content is neutralised.
   `@everyone` is refused for delete, assign and remove.
 - **No ambiguous retries.** A mutation is attempted once. A `429` is safe to
   resend because Discord rejected that attempt; a timeout, reset or `5xx` is not.
+- **Session access overrides.** `--access <CLASSES>` enables one or more of
+  `read`, `write`, `control`, `moderation` and `administrative` for a process
+  without editing the configuration; `all` enables all five, and the flag may be
+  repeated or comma-separated. It only enables classes: the existing allowlist
+  requirements are revalidated after the override, so a class cannot be enabled
+  without its channel or guild allowlist.
 - **Session kill switch.** `--read-only` or `DISCORD_MCP_READ_ONLY=1` turns all
-  four mutation classes off without editing the configuration.
+  four mutation classes off without editing the configuration, and overrides
+  every `--access` grant.
 
 ### 6.4 Tool schema rules
 
@@ -346,9 +354,9 @@ The API version must be reviewed against the current official Discord API docume
 
 ### 9.1 Secret handling
 
-- Primary development option: `DISCORD_BOT_TOKEN` environment variable.
-- Production Windows option: Windows Credential Manager via an OS credential store library.
-- Config files must contain only the name of the environment variable or credential key, never the token.
+- The server reads `DISCORD_BOT_TOKEN` from the environment. It does not read `.env` itself.
+- Native Windows Credential Manager lookup is not implemented in this build. A launcher can read the OS credential store and set the environment variable before starting the server.
+- Config files must contain only the name of the environment variable, never the token.
 - Redact secrets from Debug output, errors, telemetry, crash reports, and logs.
 - Never write tokens to logs or MCP tool results.
 

@@ -37,6 +37,7 @@ fn run(args: &[&str], stdin_data: Option<&str>, token: Option<&str>) -> Outcome 
         "DISCORD_BOT_TOKEN",
         "DISCORD_MCP_HTTP_TOKEN",
         "DISCORD_MCP_CONFIG",
+        "DISCORD_MCP_READ_ONLY",
         "RUST_LOG",
     ] {
         command.env_remove(variable);
@@ -193,6 +194,192 @@ fn validate_config_succeeds_and_keeps_stdout_clean() {
     );
     assert!(
         outcome.stderr.contains("configuration valid"),
+        "stderr: {}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn access_flag_enables_write_for_a_session() {
+    let path = temp_config(
+        "access-write",
+        "[policy]\nchannel_allowlist = [\"123456789012345678\"]\n",
+    );
+    let outcome = run(
+        &[
+            "--validate-config",
+            "--access",
+            "write",
+            "--config",
+            &path.display().to_string(),
+        ],
+        None,
+        None,
+    );
+    std::fs::remove_file(&path).ok();
+
+    assert!(!outcome.timed_out, "the process did not exit");
+    assert_eq!(outcome.exit_code, Some(0), "stderr: {}", outcome.stderr);
+    assert!(outcome.stdout.is_empty(), "stdout must stay clean");
+    assert!(
+        outcome.stderr.contains("access override: write"),
+        "stderr: {}",
+        outcome.stderr
+    );
+    assert!(
+        outcome.stderr.contains("write tools are ENABLED"),
+        "stderr: {}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn access_flag_accepts_commas_repetition_and_all() {
+    let path = temp_config(
+        "access-all",
+        concat!(
+            "[policy]\n",
+            "channel_allowlist = [\"123456789012345678\"]\n",
+            "guild_allowlist = [\"223456789012345678\"]\n",
+        ),
+    );
+    let outcome = run(
+        &[
+            "--validate-config",
+            "--access=write,control",
+            "--access",
+            "moderation",
+            "--access",
+            "administrative",
+            "--config",
+            &path.display().to_string(),
+        ],
+        None,
+        None,
+    );
+    std::fs::remove_file(&path).ok();
+
+    assert!(!outcome.timed_out, "the process did not exit");
+    assert_eq!(outcome.exit_code, Some(0), "stderr: {}", outcome.stderr);
+    for expected in [
+        "write tools are ENABLED",
+        "control tools are ENABLED",
+        "moderation tools are ENABLED",
+        "administrative tools are ENABLED",
+    ] {
+        assert!(
+            outcome.stderr.contains(expected),
+            "missing {expected:?}; stderr: {}",
+            outcome.stderr
+        );
+    }
+
+    let all_path = temp_config(
+        "access-all-token",
+        concat!(
+            "[policy]\n",
+            "channel_allowlist = [\"123456789012345678\"]\n",
+            "guild_allowlist = [\"223456789012345678\"]\n",
+        ),
+    );
+    let all = run(
+        &[
+            "--validate-config",
+            "--access",
+            "all",
+            "--config",
+            &all_path.display().to_string(),
+        ],
+        None,
+        None,
+    );
+    std::fs::remove_file(&all_path).ok();
+
+    assert_eq!(all.exit_code, Some(0), "stderr: {}", all.stderr);
+    assert!(
+        all.stderr
+            .contains("access override: read, write, control, moderation, administrative"),
+        "stderr: {}",
+        all.stderr
+    );
+}
+
+#[test]
+fn access_flag_still_requires_the_matching_allowlist() {
+    let outcome = run(&["--validate-config", "--access", "write"], None, None);
+
+    assert!(!outcome.timed_out, "the process did not exit");
+    assert_eq!(outcome.exit_code, Some(2), "stderr: {}", outcome.stderr);
+    assert!(outcome.stdout.is_empty(), "stdout must stay clean");
+    assert!(
+        outcome.stderr.contains("channel_allowlist"),
+        "stderr: {}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn read_only_overrides_access_flags() {
+    let path = temp_config(
+        "access-read-only",
+        "[policy]\nchannel_allowlist = [\"123456789012345678\"]\n",
+    );
+    let outcome = run(
+        &[
+            "--validate-config",
+            "--access",
+            "all",
+            "--read-only",
+            "--config",
+            &path.display().to_string(),
+        ],
+        None,
+        None,
+    );
+    std::fs::remove_file(&path).ok();
+
+    assert!(!outcome.timed_out, "the process did not exit");
+    assert_eq!(outcome.exit_code, Some(0), "stderr: {}", outcome.stderr);
+    assert!(
+        outcome.stderr.contains("read-only override"),
+        "stderr: {}",
+        outcome.stderr
+    );
+    assert!(
+        outcome.stderr.contains("write tools are disabled"),
+        "stderr: {}",
+        outcome.stderr
+    );
+    assert!(
+        !outcome.stderr.contains("write tools are ENABLED"),
+        "stderr: {}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn unknown_access_class_is_rejected() {
+    let outcome = run(&["--validate-config", "--access", "root"], None, None);
+
+    assert!(!outcome.timed_out, "the process did not exit");
+    assert_eq!(outcome.exit_code, Some(2), "stderr: {}", outcome.stderr);
+    assert!(outcome.stdout.is_empty(), "stdout must stay clean");
+    assert!(
+        outcome.stderr.contains("unknown access class `root`"),
+        "stderr: {}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn access_flag_requires_a_value() {
+    let outcome = run(&["--validate-config", "--access"], None, None);
+
+    assert!(!outcome.timed_out, "the process did not exit");
+    assert_eq!(outcome.exit_code, Some(2), "stderr: {}", outcome.stderr);
+    assert!(outcome.stdout.is_empty(), "stdout must stay clean");
+    assert!(
+        outcome.stderr.contains("`--access` requires a value"),
         "stderr: {}",
         outcome.stderr
     );
@@ -430,6 +617,7 @@ fn tools_are_advertised_with_strict_schemas_and_honest_annotations() {
             "discord_edit_message",
             "discord_edit_role",
             "discord_edit_thread",
+            "discord_find_abusive_messages",
             "discord_get_capabilities",
             "discord_get_channel",
             "discord_get_guild",
@@ -459,7 +647,9 @@ fn tools_are_advertised_with_strict_schemas_and_honest_annotations() {
             "schema must reject unknown arguments: {tool}"
         );
         let name = tool["name"].as_str().expect("a tool name");
-        let is_read = name.starts_with("discord_get_") || name.starts_with("discord_list_");
+        let is_read = name.starts_with("discord_get_")
+            || name.starts_with("discord_list_")
+            || name == "discord_find_abusive_messages";
         assert_eq!(
             tool["annotations"]["readOnlyHint"], is_read,
             "the read-only hint must match what the tool does: {tool}"
@@ -810,7 +1000,7 @@ fn start_http_server(name: &str, extra_config: &str) -> HttpServer {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    for variable in ["DISCORD_MCP_CONFIG", "RUST_LOG"] {
+    for variable in ["DISCORD_MCP_CONFIG", "DISCORD_MCP_READ_ONLY", "RUST_LOG"] {
         command.env_remove(variable);
     }
     command

@@ -214,15 +214,16 @@ Minimum permissions the operator grants per guild:
 | Capability | Discord permission | Needed for |
 |---|---|---|
 | See channels | View Channels | every read tool |
-| Read history | Read Message History | `discord_get_messages`, `discord_get_user_messages`, `discord_get_message` |
+| Read history | Read Message History | `discord_get_messages`, `discord_get_user_messages`, `discord_find_abusive_messages`, `discord_get_message` |
 | Send messages | Send Messages | `discord_send_message`, only when writes are enabled |
 | Member data | `GUILD_MEMBERS` **privileged intent** (Developer Portal toggle) | `discord_list_members`, `discord_get_member` |
-| Message text | `MESSAGE_CONTENT` **privileged intent** (Developer Portal toggle) | non-empty `content` in `discord_get_messages`, `discord_get_user_messages`, `discord_get_message`; without it Discord returns empty `content`, `embeds`, `attachments` and `components` in REST responses too, so every message reads as `content: null` |
+| Message text | `MESSAGE_CONTENT` **privileged intent** (Developer Portal toggle) | non-empty `content` in `discord_get_messages`, `discord_get_user_messages`, `discord_find_abusive_messages`, `discord_get_message`; without it Discord returns empty `content`, `embeds`, `attachments` and `components` in REST responses too, so every message reads as `content: null` |
+| Mutations | permissions for the enabled class, listed in `docs/SETUP.md` §2.4 | message, channel, thread, invite, role and member-moderation tools; local policy can only narrow access |
 
 `Administrator` is never required. Discord permissions remain the final
 authority: local policy can only narrow what the bot may do, never widen it.
 
-## Discord API v10 surface for v1 read tools
+## Discord API v10 read surface
 
 Base: `https://discord.com/api/v10`, bot authentication via
 `Authorization: Bot <token>`.
@@ -234,13 +235,14 @@ Base: `https://discord.com/api/v10`, bot authentication via
 | `discord_list_channels` | `GET /guilds/{guild.id}/channels` | Includes the permission-filtered set the bot can see |
 | `discord_get_channel` | `GET /channels/{channel.id}` | 403 when the bot cannot view it |
 | `discord_get_messages` | `GET /channels/{channel.id}/messages` | `limit` 1–100, `before`/`after`/`around` cursors |
-| `discord_get_user_messages` | `GET /guilds/{guild.id}/channels` then `GET /channels/{channel.id}/messages` per text/announcement channel | Bounded per-channel scan; no Discord search endpoint |
+| `discord_get_user_messages` | `GET /guilds/{guild.id}/channels` then `GET /channels/{channel.id}/messages` per text/announcement channel | Bounded per-channel scan; optional attachment filter; no Discord search endpoint |
+| `discord_find_abusive_messages` | `GET /guilds/{guild.id}/channels` then `GET /channels/{channel.id}/messages` per text/announcement channel | Bounded per-channel scan with local keyword matching; no Discord search endpoint |
 | `discord_get_message` | `GET /channels/{channel.id}/messages/{message.id}` | 404 when absent |
 | `discord_list_members` | `GET /guilds/{guild.id}/members` | `limit` 1–1000, requires the **privileged `GUILD_MEMBERS` intent** |
 | `discord_get_member` | `GET /guilds/{guild.id}/members/{user.id}` | Usually also needs `GUILD_MEMBERS` |
 
-Write endpoint for the single v1 write tool is `POST /channels/{channel.id}/messages`
-(`content` 1–2000 characters, explicit `allowed_mentions`).
+Mutation endpoints and their fields are documented per tool in `docs/TOOLS.md`.
+The adapter keeps all calls on the same bot-authenticated API version.
 
 The API version is pinned to `v10` in configuration and validation rejects any
 other value, so a version change is a deliberate, tested change.

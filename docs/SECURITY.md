@@ -84,9 +84,10 @@ session, and no database — the process holds nothing beyond the current call.
   `policy.protected_roles` add a second stop that the allowlist cannot widen:
   protected channels refuse edit, deletion, permission overwrites and thread
   edits, protected roles refuse edit and deletion, and both are checked before
-  the budget so a refusal costs no action. The set stays bounded: no bans,
-  kicks, member or nickname management, webhooks, emoji management, guild
-  settings, automod or channel reordering.
+  the budget so a refusal costs no action. The set stays bounded: moderation
+  tools (nicknames, kicks, bans, unbans, timeouts) are class-gated under
+  `moderation_enabled`; webhooks, emoji management, guild settings, automod and
+  channel/role reordering are not exposed.
 - **There is no approval prompt, and the server does not claim one.** MCP
   elicitation is optional client UI: many clients do not declare it, and newer
   protocol revisions forbid server-to-client requests, so a fail-closed prompt
@@ -136,14 +137,22 @@ session, and no database — the process holds nothing beyond the current call.
   unconditionally so a client can see the capability and why it is refused; the
   gate rejects each while its class flag is false. Argument schemas use
   `deny_unknown_fields`, so an unknown argument is refused rather than ignored,
-  and the read-only hint is truthful per tool: `true` for the ten reads, `false`
-  for every mutation.
+  and the read-only hint is truthful per tool: `true` for the eleven reads,
+  `false` for every mutation.
 - **Member moderation is bounded and local-first.** Nicknames are 1–32
   characters, reasons at most 512 characters and free of header-breaking
   newlines/NUL, ban message deletion is at most 7 days and timeouts at most 28
   days. The bot refuses to target itself. These checks run before the budget and
   before any request; Discord's permission and hierarchy checks remain
-  authoritative.
+  authoritative. Live moderation checks exercised nickname set/clear, timeout
+  set/clear, kick, ban and unban against a consenting non-owner.
+- **Role hierarchy is authoritative for role tools.** The bot can create, edit,
+  assign or delete only roles below its highest role. It refuses to edit or
+  delete that highest role or remove it from itself. It cannot move its own
+  managed role above a higher role, so an owner must reorder the roles in
+  Discord before a positive role test against that higher role can succeed;
+  otherwise Discord returns `403` / `50013`. Positive role edit, assign, remove
+  and delete remain unverified for this reason.
 - **An outgoing message is checked locally before any request.** Write flag,
   channel allowlist, optional text, embed bounds, file scope/count/bytes and
   mention neutralisation are decided in policy from local configuration; the
@@ -283,11 +292,21 @@ session, and no database — the process holds nothing beyond the current call.
 |---|---|
 | Draft/review prompts | optional in the specification; no draft or review workflow to attach them to |
 | Host-level approval prompt | MCP elicitation is optional client UI and is not a gate this build relies on; the shipped approval model is class flag + allowlist + budget + `dry_run` + audit |
-| Guild settings, automod, bans/kicks, member and nickname management, webhooks, emoji management | no tool exists for them in this build |
+| Guild settings, automod, webhooks, emoji management | no tool exists for them in this build |
+| Channel or role position/reordering | no tool; Discord's role hierarchy still governs role changes |
 
 Everything else in this document describes shipped behaviour.
 
-## 8. Reporting
+## 8. Release integrity
+
+- Use the GitHub release page for the tag, commit and any published SHA-256.
+  Verify the downloaded executable against the checksum for that same release.
+- The crate/package version remains `0.1.0`; release tags may be feature-qualified
+  rather than version bumps.
+- CI performs a release build but does not upload an artifact; publication is
+  manual.
+
+## 9. Reporting
 
 A security issue in this server should be handled as a private report to the
 maintainer of the deployment. Do not open a public issue containing a token, a

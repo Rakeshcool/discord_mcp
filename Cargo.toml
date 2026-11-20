@@ -55,6 +55,10 @@ serde_json = "=1.0.154"
 # tests, without opening a socket.
 tower = { version = "=0.5.3", features = ["util"] }
 
+[target.'cfg(windows)'.build-dependencies]
+# Embeds the application icon into the Windows executable.
+winres = "=0.1.12"
+
 [lints.rust]
 unsafe_code = "forbid"
 missing_debug_implementations = "warn"

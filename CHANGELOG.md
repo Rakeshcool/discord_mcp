@@ -3,7 +3,30 @@
 Notable changes to `discord-mcp`, grouped by capability rather than by commit â€”
 `TASKS.md` is the unit of work in this project.
 
-## Unreleased â€” member moderation
+## Unreleased
+
+### Session access overrides
+
+- **`--access` CLI overrides.** `serve` and `--validate-config` accept
+  `--access read,write,control,moderation,administrative` (repeatable, with
+  `all` as a shortcut). The flag enables classes for one process without editing
+  the configuration, then revalidates the result so the existing channel/guild
+  allowlist requirements still apply. `--read-only` and
+  `DISCORD_MCP_READ_ONLY=1` still win over every access grant.
+
+### Abuse keyword scan
+
+- **`discord_find_abusive_messages`.** A read-only scan of the newest messages in
+  every visible text and announcement channel, matching case-insensitive abuse
+  and harassment keywords and grouping results by author. It uses a conservative
+  built-in list unless `keywords` replaces it, shares the 50-request scan cap and
+  policy allowlists, and returns per-channel reports just like the user scan.
+  Matches are review evidence, not proof of abuse, and no moderation is applied.
+- **Attachment filtering for user scans.** `discord_get_user_messages` accepts
+  `has_attachments`: `true` returns only messages with attachments, `false` only
+  messages without them, and omitting it returns both.
+
+### Member moderation
 
 - **Six member-moderation tools behind a new class.**
   `discord_set_member_nickname`, `discord_kick_member`, `discord_ban_member`,
@@ -20,7 +43,7 @@ Notable changes to `discord-mcp`, grouped by capability rather than by commit â€
   recording the reason or any content. Live Discord permissions and hierarchy
   remain authoritative, and the required permissions are documented.
 
-## Unreleased â€” rich messages
+### Rich messages
 
 - **Reads return rich message details.** `discord_get_messages`,
   `discord_get_user_messages` and `discord_get_message` now include bounded
@@ -36,7 +59,7 @@ Notable changes to `discord-mcp`, grouped by capability rather than by commit â€
   `policy.max_attachment_bytes` and `policy.max_attachment_total_bytes` bound
   uploads before the budget is spent. Replies disable the reply ping.
 
-## Unreleased â€” user message scan
+### User message scan
 
 - **`discord_get_user_messages`.** Collects recent messages by one author across
   every visible text and announcement channel in a guild, since Discord exposes
@@ -49,7 +72,7 @@ Notable changes to `discord-mcp`, grouped by capability rather than by commit â€
   reports per-channel failures without aborting the rest of the scan. This is a
   bounded history scan, not a full-history export.
 
-## Unreleased â€” server control, slice 1
+### Server control, slice 1
 
 - **Capability model.** `policy.control_enabled` and
   `policy.administrative_enabled` join `write_enabled` as separate opt-ins, each
@@ -289,7 +312,7 @@ channels, and only when writes are deliberately enabled.
   documented rather than worked around, including how to confirm the toggle from
   the application's `flags`.
 
-### Not in this build
+### Not in v0.1.0
 
 - More write operations: the send tool exists, but nothing can edit,
   delete, react or bulk-delete, and it stays off unless deliberately enabled.

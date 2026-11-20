@@ -17,12 +17,16 @@ const USAGE: &str = "\
 discord-mcp — secure Discord MCP server (official bot identity only)
 
 USAGE:
-    discord-mcp <COMMAND> [--config <PATH>] [--read-only]
+    discord-mcp <COMMAND> [--config <PATH>] [--access <CLASSES>] [--read-only]
 
 COMMANDS:
     serve                Run the MCP server over the configured transport
     --validate-config    Validate configuration, report, and exit
-    --read-only          Disable every mutation class, whatever the config says
+    --access <CLASSES>   Enable access classes without editing the config:
+                         read, write, control, moderation, administrative,
+                         or all (comma-separated; repeatable)
+    --read-only          Disable every mutation class, whatever the config or
+                         --access says
     --version, -V        Print the version
     --help, -h           Print this help
 
@@ -62,6 +66,7 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode, AppError> {
     let mut command: Option<Command> = None;
     let mut config_path: Option<PathBuf> = None;
+    let mut access = Vec::new();
     let mut read_only = std::env::var("DISCORD_MCP_READ_ONLY")
         .map(|value| matches!(value.trim(), "1" | "true" | "yes"))
         .unwrap_or(false);
@@ -75,6 +80,17 @@ fn run() -> Result<ExitCode, AppError> {
             "--help" | "-h" => Command::Help,
             "--read-only" => {
                 read_only = true;
+                continue;
+            }
+            "--access" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| AppError::invalid_argument("`--access` requires a value"))?;
+                parse_access(&value, &mut access)?;
+                continue;
+            }
+            other if other.starts_with("--access=") => {
+                parse_access(other.trim_start_matches("--access="), &mut access)?;
                 continue;
             }
             "--config" => {
@@ -121,10 +137,15 @@ fn run() -> Result<ExitCode, AppError> {
         Command::ValidateConfig => {
             let path = resolve_config_path(config_path);
             let (mut config, source) = load::load_with_source(path.as_deref())?;
+            apply_access(&mut config, &access);
+            if !access.is_empty() {
+                eprintln!("access override: {}", access_names(&access));
+            }
             if read_only {
                 apply_read_only(&mut config);
                 eprintln!("read-only override: every mutation class is disabled");
             }
+            config.validate().map_err(AppError::from)?;
             let report = AppService::validate_only(&config);
             eprintln!("configuration valid (source: {})", source.as_str());
             eprintln!(
@@ -144,9 +165,13 @@ fn run() -> Result<ExitCode, AppError> {
         Command::Serve => {
             let path = resolve_config_path(config_path);
             let mut config = load::load(path.as_deref())?;
+            apply_access(&mut config, &access);
             if read_only {
                 apply_read_only(&mut config);
             }
+            // Access flags are validated again after they change the config:
+            // enabling a class without its required allowlist must fail closed.
+            config.validate().map_err(AppError::from)?;
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
                 .enable_all()
@@ -160,6 +185,112 @@ fn run() -> Result<ExitCode, AppError> {
             runtime.block_on(service.run())?;
             drop(runtime);
             Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+/// One access class that `--access` can enable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccessClass {
+    Read,
+    Write,
+    Control,
+    Moderation,
+    Administrative,
+}
+
+impl AccessClass {
+    /// Every class, in the order shown in help and diagnostics.
+    const ALL: [Self; 5] = [
+        Self::Read,
+        Self::Write,
+        Self::Control,
+        Self::Moderation,
+        Self::Administrative,
+    ];
+
+    /// Stable spelling for help and diagnostics.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Control => "control",
+            Self::Moderation => "moderation",
+            Self::Administrative => "administrative",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        if value.eq_ignore_ascii_case("read") {
+            Some(Self::Read)
+        } else if value.eq_ignore_ascii_case("write") {
+            Some(Self::Write)
+        } else if value.eq_ignore_ascii_case("control") {
+            Some(Self::Control)
+        } else if value.eq_ignore_ascii_case("moderation") {
+            Some(Self::Moderation)
+        } else if value.eq_ignore_ascii_case("administrative") {
+            Some(Self::Administrative)
+        } else {
+            None
+        }
+    }
+}
+
+fn parse_access(value: &str, access: &mut Vec<AccessClass>) -> Result<(), AppError> {
+    if value.trim().is_empty() {
+        return Err(AppError::invalid_argument(
+            "`--access` requires at least one access class",
+        ));
+    }
+
+    for part in value.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            return Err(AppError::invalid_argument(
+                "`--access` contains an empty access class",
+            ));
+        }
+        if part.eq_ignore_ascii_case("all") {
+            for class in AccessClass::ALL {
+                add_access(access, class);
+            }
+        } else if let Some(class) = AccessClass::parse(part) {
+            add_access(access, class);
+        } else {
+            return Err(AppError::invalid_argument(format!(
+                "unknown access class `{part}`; use read, write, control, moderation, administrative, or all"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn add_access(access: &mut Vec<AccessClass>, class: AccessClass) {
+    if !access.contains(&class) {
+        access.push(class);
+    }
+}
+
+fn access_names(access: &[AccessClass]) -> String {
+    access
+        .iter()
+        .map(|class| class.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Apply explicit command-line access grants before the configuration is
+/// validated again. This only enables classes; it never removes configured
+/// allowlists or other safety limits.
+fn apply_access(config: &mut Config, access: &[AccessClass]) {
+    for class in access {
+        match class {
+            AccessClass::Read => config.policy.read_enabled = true,
+            AccessClass::Write => config.policy.write_enabled = true,
+            AccessClass::Control => config.policy.control_enabled = true,
+            AccessClass::Moderation => config.policy.moderation_enabled = true,
+            AccessClass::Administrative => config.policy.administrative_enabled = true,
         }
     }
 }

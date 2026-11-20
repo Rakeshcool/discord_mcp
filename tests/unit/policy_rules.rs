@@ -9,13 +9,14 @@ use discord_mcp::policy::rules::{
     validate_member_nickname, validate_moderation_reason, validate_timeout_seconds,
 };
 
-const READ_TOOLS: [&str; 9] = [
+const READ_TOOLS: [&str; 10] = [
     "discord_list_guilds",
     "discord_get_guild",
     "discord_list_channels",
     "discord_get_channel",
     "discord_get_messages",
     "discord_get_user_messages",
+    "discord_find_abusive_messages",
     "discord_get_message",
     "discord_list_members",
     "discord_get_member",

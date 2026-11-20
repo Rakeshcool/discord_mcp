@@ -3,7 +3,7 @@
 Every tool this build exposes, with its arguments, its result shape, the policy
 that applies to it and the errors it can return.
 
-This build has **ten read tools and twenty-nine mutations** — seven message
+This build has **eleven read tools and twenty-nine mutations** — seven message
 writes, ten structure/control tools, six member-moderation tools and six
 administrative tools — plus one resource. Tools are registered unconditionally,
 so a call that policy refuses comes back as a `POLICY_BLOCKED` result rather
@@ -62,7 +62,7 @@ covers the threat model.
 | `policy.channel_allowlist` | When non-empty: channel tools refuse unlisted channels. Enabling writes requires it to be non-empty |
 | `policy.protected_channels` | Channels no tool may edit or delete, even when allowlisted. Refused before the budget; a refusal spends no action |
 | `policy.protected_roles` | Roles no tool may edit or delete, even when allowlisted. Refused before the budget |
-| `policy.max_messages_per_read` | Ceiling for `discord_get_messages.limit` and for each page of `discord_get_user_messages`; the scan's per-channel default |
+| `policy.max_messages_per_read` | Ceiling for `discord_get_messages.limit` and for each page of `discord_get_user_messages` and `discord_find_abusive_messages`; the scan's per-channel default |
 | `policy.max_message_characters` | Ceiling for `discord_send_message.content`, counted in characters |
 | `policy.max_embeds_per_message` | Embeds allowed on one send (default 10) |
 | `policy.max_embed_characters` | Total characters across every embed on one send (default 6000) |
@@ -195,6 +195,7 @@ search or a full-history export.
 | `user_id` | string | yes | Author's user ID |
 | `limit` | integer | no | Maximum matching messages returned, 1–100; default 50 |
 | `scan_limit` | integer | no | Newest messages inspected **per channel**, 1–1000; default `policy.max_messages_per_read` (100) |
+| `has_attachments` | boolean | no | `true` returns only messages with at least one attachment; `false` only messages without one; omit for both |
 
 ```json
 {"guild_id":"1572365819281932408","user_id":"1572365819281932399","items":[{"id":"1300000000000000001","channel_id":"1572365820133118035","guild_id":"1572365819281932408","author":{"id":"1572365819281932399","username":"example","bot":false},"content":"hello","timestamp":"2026-11-18T09:12:44.000000+00:00","edited_timestamp":null,"attachment_count":0,"embeds":[],"reactions":[],"attachments":[]}],"channels":[{"channel_id":"1572365820133118035","name":"general","kind":"text","scanned":42,"matched":1,"has_more":false}],"scanned_messages":42,"truncated":false,"requests_made":1,"global_truncated":false}
@@ -210,14 +211,17 @@ search or a full-history export.
   `discord_get_user_messages` does not use the write action budget.
 - Each matching message has the same shape as a `discord_get_messages` item,
   including the same bounded rich fields, and is subject to the same
-  `content: null` caveat.
+  `content: null` caveat. `has_attachments` filters on `attachment_count`, so it
+  still works for messages whose attachment metadata was truncated.
 - `channels` reports what each attempted channel contributed. `matched` counts
   matching messages seen in that channel's scanned window, even if the global
   result cap later dropped one. `has_more` means the per-channel scan stopped at
   `scan_limit`, or the global request cap stopped it, while older messages may
   remain. A channel that returns `PERMISSION_DENIED`, `RESOURCE_NOT_FOUND` or
   another error appears with its `error` string and does not abort the other
-  channels.
+  channels. Discord can instead answer a channel without Read Message History
+  with a successful empty page; that channel appears with `scanned: 0` and no
+  `error`, so inspect its permissions separately.
 - `truncated` is `true` when more matching messages were found than the global
   `limit` could return. The scan keeps visiting eligible channels past that
   result cap, until every channel is visited or the request cap is reached.
@@ -228,6 +232,51 @@ search or a full-history export.
 - This is not an exhaustive history search. Matching messages are ordered
   newest-first across channels, and `limit` bounds the returned set, not how many
   channels are scanned.
+
+### `discord_find_abusive_messages`
+
+Scan the newest messages in every visible **text or announcement channel** and
+return messages containing configured abuse or harassment terms, plus an
+author-level summary. This is keyword detection for review, not a finding that a
+user violated a rule and not an automatic moderation action.
+
+| Argument | Type | Required | Notes |
+|---|---|---|---|
+| `guild_id` | string | yes | Guild ID |
+| `keywords` | array of strings | no | 1–25 terms, each at most 64 characters; replaces the built-in conservative list |
+| `limit` | integer | no | Maximum matching messages returned, 1–100; default 50 |
+| `scan_limit` | integer | no | Newest messages inspected **per channel**, 1–1000; default `policy.max_messages_per_read` (100) |
+
+```json
+{"guild_id":"1572365819281932408","keywords":["idiot","shut up"],"items":[{"id":"1300000000000000002","channel_id":"1572365820133118035","guild_id":"1572365819281932408","author":{"id":"1572365819281932399","username":"example","bot":false},"content":"shut up, idiot","timestamp":"2026-11-18T09:12:44.000000+00:00","edited_timestamp":null,"attachment_count":0,"embeds":[],"reactions":[],"attachments":[],"matched_keywords":["idiot","shut up"]}],"users":[{"user_id":"1572365819281932399","username":"example","matched_messages":1,"matched_keywords":["idiot","shut up"],"channel_ids":["1572365820133118035"]}],"channels":[{"channel_id":"1572365820133118035","name":"general","kind":"text","scanned":42,"matched":1,"has_more":false}],"scanned_messages":42,"truncated":false,"requests_made":1,"global_truncated":false}
+```
+
+- The default list is deliberately conservative: `idiot`, `stupid`, `moron`,
+  `dumbass`, `loser`, `worthless`, `pathetic`, `useless`, `shut up`,
+  `nobody likes you`, `hate you`, `kill yourself`, `kys`, `go die`,
+  `you're dead`, `youre dead`, `i will hurt you`, `i'll hurt you` and
+  `watch your back`. Supplying `keywords` replaces it; use the caller's list when
+  the community's language or policy requires different terms.
+- Matching is case-insensitive and word-bounded: `idiot` matches `IDIOT!` but not
+  `idiotic`, and whitespace is collapsed so `shut   up` matches `shut up`.
+  Keyword matching does not understand context, sarcasm, quotation, or who the
+  target was. Treat every hit as a review signal and read the surrounding
+  messages before drawing a conclusion.
+- The scan uses the same eligible-channel, allowlist, per-channel `scan_limit`
+  and **50-request** cap as `discord_get_user_messages`. It skips threads,
+  forums, voice and category channels, and a per-channel failure appears in
+  `channels` without aborting the rest of the scan. Discord may return an empty
+  page, rather than an error, when it withholds Read Message History; that case
+  appears as `scanned: 0` and should be checked against channel permissions.
+- `items` is ordered newest-first and bounded by `limit`; `matched_keywords`
+  preserves the configured term order. `users` aggregates the returned items by
+  author, highest match count first, with usernames, matched terms and channel
+  IDs. `channels[].matched` counts all matching messages seen in that channel's
+  scanned window, even when the global result cap drops one; `truncated` and
+  `global_truncated` report those limits.
+- Requires **View Channels**, **Read Message History**, and the **Message Content
+  intent** for message bodies. Without that intent Discord returns no content, so
+  the scan can produce no matches even though messages exist.
 
 ### `discord_get_message`
 
@@ -617,9 +666,11 @@ is not, and a client should branch on the code.
 - No webhook or emoji management yet; those are the next packs.
 - No gateway connection, event stream or scheduled job: every read is
   request/response.
-- No Discord search endpoint. `discord_get_user_messages` scans the newest
-  messages in visible text and announcement channels, but cannot reach history
-  older than its bounded per-channel scan.
+- No Discord search endpoint. `discord_get_user_messages` and
+  `discord_find_abusive_messages` scan the newest messages in visible text and
+  announcement channels, but cannot reach history older than their bounded
+  per-channel scan. The abuse scan is keyword-based only; it does not classify
+  context or prove that abuse occurred.
 - Attachment bytes are not downloaded; reads return metadata and Discord URLs
   only. Stickers, components and poll details are not returned.
 - Rich sends stop at embeds, files and replies: no stickers, polls, components,

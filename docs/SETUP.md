@@ -4,7 +4,7 @@ End-to-end instructions for installing and using this MCP server: a Discord bot
 application, the build, configuration, both transports, client wiring, and the
 checks that tell you it is actually working.
 
-This build exposes 39 tools and one resource: ten read tools and 29 mutations
+This build exposes 40 tools and one resource: eleven read tools and 29 mutations
 in four separately gated classes. Every mutation class is off by default.
 `policy.write_enabled` opens send, edit, reactions and pins;
 `policy.control_enabled` opens message deletion, channels, permission overwrites,
@@ -307,6 +307,23 @@ Success prints `configuration valid (source: …)` plus the transport and whethe
 bot token is present, on **stderr**. Exit code `0` means valid, `2` means a usage
 or configuration error.
 
+### Session access overrides
+
+Use `--access <CLASSES>` to enable classes for one process without editing the
+configuration file. The value is a comma-separated list or repeated flag; each
+class is `read`, `write`, `control`, `moderation`, `administrative`, or `all`:
+
+```powershell
+.\target\release\discord-mcp.exe serve --config config\local.toml --access write,control
+.\target\release\discord-mcp.exe --validate-config --access all --config config\local.toml
+```
+
+The flags only turn classes on. The existing allowlist requirements still apply:
+write and control need `channel_allowlist`, and moderation and administration
+need `guild_allowlist`. A class enabled without its allowlist is a configuration
+error, not an unrestricted session. `--read-only` and `DISCORD_MCP_READ_ONLY=1`
+override every access flag and turn all mutation classes off.
+
 Example hardening config — one guild only, reads only:
 
 ```toml
@@ -351,7 +368,7 @@ To use a custom configuration, add `"--config", "D:\\...\\config\\local.toml"` t
 
 ### What the server exposes
 
-Thirty-nine tools and the `discord://guilds` resource: ten read tools (including
+Forty tools and the `discord://guilds` resource: eleven read tools (including
 `discord_get_capabilities`) and 29 mutations split across the four class flags
 above. Argument schemas reject unknown fields, and Discord snowflakes are decimal
 strings, never numbers.
@@ -607,8 +624,11 @@ Run these in order; each one isolates a different layer.
 4. **Channel reads** — `discord_list_channels` then `discord_get_messages` on a
    channel. Text coming back proves permissions, intent and the model mapping.
    `discord_get_user_messages` exercises the fan-out path: it should list each
-   visible text channel under `channels`, and a channel without Read Message
-   History should carry an `error` without failing the others.
+   visible text channel under `channels`. A channel where Discord withholds
+   Read Message History may return an empty page rather than a per-channel error;
+   verify that channel's permissions separately. Other channels must still be
+   scanned, and a real request failure must carry an `error` without failing the
+   rest.
 5. **Refusals still fail closed** — `guild_id: "abc"` must return
    `INVALID_ARGUMENT`, and a `limit` above `policy.max_messages_per_read` must be
    refused rather than clamped.
@@ -619,25 +639,16 @@ Run these in order; each one isolates a different layer.
 7. **HTTP gate** — with the server running: no token → `401`, wrong token →
    `401`, `Host: rebind.example` → `403`, `Origin: https://evil.example` → `403`,
    correct token → `200`.
-8. **Artifact integrity** — if you are checking a packaged build against
-   [`../dist/discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256`](../dist/discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256):
+8. **Artifact integrity** — for a downloaded release, compare its SHA-256 with
+   the checksum published beside that same release:
 
    ```powershell
-   .\scripts\build-release.ps1
-   Get-Content dist\discord-mcp-0.1.0-x86_64-pc-windows-msvc.sha256
+   Get-FileHash .\discord-mcp.exe -Algorithm SHA256
    ```
 
-   The script prints the SHA-256 of the artifact it just built; it must equal the
-   hash in that file. The release build is byte-reproducible: `build.rs` passes
-   `/Brepro`, without which the MSVC linker stamps the build time and a random
-   PDB GUID into the executable, and the script remaps the Cargo registry and
-   workspace paths that dependency panic messages would otherwise embed. A plain
-   `cargo build --release` in this checkout produces the same hash, as does a
-   build from an empty `target/`. A build from a **different directory** does not:
-   Cargo hashes the package's absolute path into crate metadata, which reorders
-   symbols, so verify by rebuilding in the same checkout. The executable itself is
-   not committed; the build made from this tag is attached to the GitHub release,
-   with the same hash.
+   For a local reproducible build, `scripts\build-release.ps1` prints the hash.
+   Compare it with the build you are verifying, not with a different release or
+   checkout.
 
 A quick scripted STDIO smoke test (PowerShell), which prints the JSON-RPC
 responses and nothing else:

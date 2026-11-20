@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="discord-mcp logo" width="200">
+</p>
+
 # discord-mcp
 
 A Model Context Protocol (MCP) server for Discord, using an **official bot
@@ -11,14 +15,14 @@ limited, auditable and dry-runnable.
 ## Install
 
 Download `discord-mcp.exe` from the
-[latest release](https://github.com/Rakeshcool/discord_mcp/releases/tag/v0.1.0)
-and verify it against the attached checksum:
+[releases page](https://github.com/Rakeshcool/discord_mcp/releases). If the
+release publishes a SHA-256, verify the download against that same release:
 
 ```powershell
 (Get-FileHash .\discord-mcp.exe -Algorithm SHA256).Hash.ToLower()
 ```
 
-The result must be `7d542065e3b178f30279dc79635694e731346c7cf848cc537cd0779cef57add4`.
+Do not compare a download with a checksum from a different release.
 
 ## Quick start
 
@@ -65,6 +69,19 @@ Defaults are compiled in from `config/default.toml`. Point the server at your ow
 copy with `--config <PATH>` or `DISCORD_MCP_CONFIG`; a file that fails to parse
 or validate stops startup rather than falling back silently.
 
+For a one-session class override, pass `--access` with `read`, `write`,
+`control`, `moderation`, `administrative`, or `all`. It accepts a comma-separated
+list and can be repeated:
+
+```powershell
+.\discord-mcp.exe serve --access write,control --config config\local.toml
+```
+
+Access flags only enable classes. The configured allowlists still apply:
+`channel_allowlist` for write and control, `guild_allowlist` for moderation and
+administration. `--read-only` (or `DISCORD_MCP_READ_ONLY=1`) forces every mutation class off,
+regardless of `--access`.
+
 | Variable | Purpose |
 |---|---|
 | `DISCORD_BOT_TOKEN` | Bot token, required by `serve`; the variable name comes from `discord.token_env` |
@@ -77,12 +94,12 @@ lists the variable names.
 
 ## What it can do
 
-39 tools, grouped by the policy flag that enables them.
+40 tools, grouped by the policy flag that enables them.
 
 | Area | Tools | Enabled by |
 |---|---|---|
 | Capabilities | `discord_get_capabilities` | `read_enabled` (default on) |
-| Read | `discord_list_guilds`, `discord_get_guild`, `discord_list_channels`, `discord_get_channel`, `discord_get_messages`, `discord_get_user_messages`, `discord_get_message`, `discord_list_members`, `discord_get_member` | `read_enabled` (default on) |
+| Read | `discord_list_guilds`, `discord_get_guild`, `discord_list_channels`, `discord_get_channel`, `discord_get_messages`, `discord_get_user_messages`, `discord_find_abusive_messages`, `discord_get_message`, `discord_list_members`, `discord_get_member` | `read_enabled` (default on) |
 | Messages | `discord_send_message`, `discord_edit_message`, `discord_add_reaction`, `discord_remove_reaction`, `discord_clear_reactions`, `discord_pin_message`, `discord_unpin_message` | `write_enabled` |
 | Message moderation | `discord_delete_message` | `control_enabled` |
 | Member moderation | `discord_set_member_nickname`, `discord_kick_member`, `discord_ban_member`, `discord_unban_member`, `discord_timeout_member`, `discord_clear_member_timeout` | `moderation_enabled` |
@@ -90,14 +107,21 @@ lists the variable names.
 | Structure | `discord_create_channel`, `discord_edit_channel`, `discord_delete_channel`, `discord_set_permission_overwrite`, `discord_delete_permission_overwrite`, `discord_create_thread`, `discord_edit_thread`, `discord_create_invite`, `discord_delete_invite` | `control_enabled` |
 | Roles | `discord_create_role`, `discord_edit_role`, `discord_delete_role`, `discord_assign_role`, `discord_remove_role` | `administrative_enabled` |
 
+`discord_get_user_messages` accepts `has_attachments` to return only messages
+with attachments, only messages without them, or both when omitted.
+`discord_find_abusive_messages` scans the same bounded channel window for
+case-insensitive abuse keywords and groups matches by author. Its built-in list
+is conservative and can be replaced with `keywords`; matches are review signals,
+not a moderation verdict, and the tool never takes action automatically.
+
 `discord_get_capabilities` reports the enabled classes, their limits and the
 authenticated bot, so a client can plan within its rights before calling anything
 else.
 
 ### Enabling mutations
 
-Every mutation class is **off by default** and needs its flag plus a non-empty
-allowlist:
+Every mutation class is **off by default** and needs its config flag (or the
+matching `--access` class) plus a non-empty allowlist:
 
 | Flag | What it opens | Allowlist |
 |---|---|---|
@@ -219,9 +243,10 @@ behind a proxy that does, with the settings in
 cargo build --release
 ```
 
-Windows MSVC only (`x86_64-pc-windows-msvc`); no WSL or Docker. For a build whose
-hash matches `dist/*.sha256`, use `scripts\build-release.ps1`, which makes the
-build byte-reproducible and prints the artifact's SHA-256.
+Windows MSVC only (`x86_64-pc-windows-msvc`); no WSL or Docker. For a
+byte-reproducible local build, use `scripts\build-release.ps1`, which prints the
+artifact's SHA-256. Compare that hash with the build you are verifying, not with
+a different release or checkout.
 
 ## Documentation
 
@@ -232,8 +257,9 @@ build byte-reproducible and prints the artifact's SHA-256.
 - [`llm_instruction.md`](llm_instruction.md) — how an LLM works through the
   server: handshake, capability discovery, read and mutation workflows, result
   codes and safety rules.
-- [`docs/LIVE_TESTING.md`](docs/LIVE_TESTING.md) — the live run through MCP
-  Bridge: every tool exercised, policy and HTTP checks, findings and leftovers.
+- [`docs/LIVE_TESTING.md`](docs/LIVE_TESTING.md) — live results, findings,
+  cleanup and current gaps.
+- [`conduct_test.md`](conduct_test.md) — short manual QA checklist.
 - [`docs/SECURITY.md`](docs/SECURITY.md) — threat model and implemented controls.
 - [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md) — dependency choices and the
   advisory scan.

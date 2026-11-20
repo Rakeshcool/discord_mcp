@@ -17,6 +17,16 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=assets/app-icon.ico");
+
+    #[cfg(windows)]
+    {
+        let mut resource = winres::WindowsResource::new();
+        resource.set_icon("assets/app-icon.ico");
+        resource
+            .compile()
+            .expect("failed to compile Windows icon resource");
+    }
 
     // Only the MSVC linker understands this flag; other targets need nothing.
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
