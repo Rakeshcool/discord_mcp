@@ -105,8 +105,8 @@ The user must do these steps in the Discord Developer Portal and Discord client:
 2. Invite the bot to the test server with least-privilege permissions.
 3. Enable **Message Content** if message text is needed.
 4. Enable **Server Members** if member tools are needed.
-5. Grant only the permissions for the tools being tested. See
-   [`docs/SETUP.md`](docs/SETUP.md) §2.4.
+5. Grant only the permissions for the tools being tested. See Step 5 of
+   [`discord_setup_guide.md`](discord_setup_guide.md).
 
 If the bot is not invited, the intents are off, or a required permission is
 missing, the server may start but the affected tool will fail. Report the
@@ -194,9 +194,9 @@ For a source checkout, run the tests with:
 cargo test --quiet
 ```
 
-Do not perform a mutation during setup. After setup, read
-[`llm_instruction.md`](llm_instruction.md) for the tool workflow, dry-run rules,
-and error handling.
+Do not perform a mutation during setup. After setup, use
+`discord_get_capabilities` and the tools' own result codes to choose a workflow,
+and keep mutations on `dry_run: true` until the operator approves a real call.
 
 ## 8. Report blockers
 

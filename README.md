@@ -8,9 +8,10 @@ A Model Context Protocol (MCP) server for Discord, using an **official bot
 identity**. Windows 11 x64 (Rust), over STDIO or Streamable HTTP.
 
 > **LLM agents:** read [`instruction.md`](instruction.md) first and follow it to
-> build, configure, and verify the project. Discord portal steps — creating the
-> application, inviting the bot, enabling intents, and granting permissions —
-> remain manual account-owner actions.
+> build, configure, and verify the project. For the manual Discord-side steps,
+> use [`discord_setup_guide.md`](discord_setup_guide.md): creating the
+> application, inviting the bot, enabling intents, granting permissions, and
+> the expected failures.
 
 It is not a self-bot, not user-account automation, and not a Discord client. It
 reads through the bot API and, when each policy class is enabled, sends and
@@ -35,9 +36,10 @@ Do not compare a download with a checksum from a different release.
 ## Quick start
 
 The account owner must manually create a Discord application, invite the bot,
-enable the required intents, and grant permissions. [`docs/SETUP.md`](docs/SETUP.md)
-walks through the portal and verification; the runnable setup steps are in
-[`instruction.md`](instruction.md).
+enable the required intents, and grant permissions. Follow
+[`discord_setup_guide.md`](discord_setup_guide.md) for the step-by-step portal
+flow, permission table, exceptions, and expected outcomes; the runnable setup
+steps are in [`instruction.md`](instruction.md).
 
 ```powershell
 $env:DISCORD_BOT_TOKEN = "<bot token>"
@@ -243,8 +245,8 @@ reports status behind the same token. The listener is loopback-only unless
 `require_auth = true` and an explicit `allowed_origins` list.
 
 **This server does not terminate TLS.** For anything beyond loopback, run it
-behind a proxy that does, with the settings in
-[`docs/SETUP.md`](docs/SETUP.md) §7.
+behind a proxy that does, keep the upstream listener on loopback, and set an
+explicit `allowed_origins` list.
 
 ## Build from source
 
@@ -257,20 +259,13 @@ byte-reproducible local build, use `scripts\build-release.ps1`, which prints the
 artifact's SHA-256. Compare that hash with the build you are verifying, not with
 a different release or checkout.
 
-## Documentation
+## Start here
 
-- [`docs/SETUP.md`](docs/SETUP.md) — Discord application, token, intents,
-  permissions, both transports, verification, troubleshooting.
-- [`docs/TOOLS.md`](docs/TOOLS.md) — every tool: arguments, result JSON, error
-  codes, retry behaviour.
-- [`instruction.md`](instruction.md) — step-by-step automatic setup for an LLM:
-  prerequisites, build, token handling, allowlists, launch, and verification.
-- [`llm_instruction.md`](llm_instruction.md) — how an LLM works through the
-  server: handshake, capability discovery, read and mutation workflows, result
-  codes and safety rules.
-- [`docs/LIVE_TESTING.md`](docs/LIVE_TESTING.md) — live results, findings,
-  cleanup and current gaps.
-- [`conduct_test.md`](conduct_test.md) — short manual QA checklist.
-- [`docs/SECURITY.md`](docs/SECURITY.md) — threat model and implemented controls.
-- [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md) — dependency choices and the
-  advisory scan.
+Read these three files in order:
+
+1. `README.md` (this file) — overview, install, and configuration.
+2. [`instruction.md`](instruction.md) — automated build and local setup.
+3. [`discord_setup_guide.md`](discord_setup_guide.md) — manual Discord portal
+   setup and permission guidance.
+
+Other Markdown files are maintainer references and are not required for setup.
