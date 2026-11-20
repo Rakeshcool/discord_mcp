@@ -3,7 +3,11 @@
 Notable changes to `discord-mcp`, grouped by capability rather than by commit —
 `TASKS.md` is the unit of work in this project.
 
-## Unreleased
+## v0.1.0-access.1 — 2026-11-20
+
+**Published as GitHub release `v0.1.0-access.1`.** The tag names the release
+commit and the assets are `discord-mcp.exe` plus
+`discord-mcp-0.1.0-access.1-x86_64-pc-windows-msvc.sha256`.
 
 ### Session access overrides
 

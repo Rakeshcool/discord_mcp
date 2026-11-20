@@ -4,7 +4,7 @@ Updated: 2026-11-20
 
 Branch: `feat/user-message-search`
 
-Current base: `main`; tag `v0.1.0-moderation.1` remains at `28e0b3e`.
+Current base: `main`; latest release tag is `v0.1.0-access.1`.
 
 ## Current state
 
@@ -26,12 +26,13 @@ Current base: `main`; tag `v0.1.0-moderation.1` remains at `28e0b3e`.
 - [ ] Cross-user Manage Messages paths, including clear-reactions and bulk delete.
 - [ ] Managed-role delete and permission-edit refusal against a second bot or
   integration role.
-- [ ] Commit, push, PR/CI review and release for the current branch.
+- [x] Commit, push and publish the release.
+- [ ] PR/CI review if desired.
 
 ## Release
 
-- `main` carries the rewritten history; tag `v0.1.0-moderation.1` remains at `28e0b3e`.
-- Download release assets and any published SHA-256 from the GitHub release page.
+- `v0.1.0-access.1` contains the current binary and checksum assets.
+- `v0.1.0-moderation.1` remains at `28e0b3e` as a historical release.
+- Download release assets and the published SHA-256 from the GitHub release page.
   Verify the hash against that same release; do not compare it with a different
   build.
-- The current branch is not released.

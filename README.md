@@ -15,13 +15,16 @@ limited, auditable and dry-runnable.
 ## Install
 
 Download `discord-mcp.exe` from the
-[releases page](https://github.com/Rakeshcool/discord_mcp/releases). If the
-release publishes a SHA-256, verify the download against that same release:
+[v0.1.0-access.1 release](https://github.com/Rakeshcool/discord_mcp/releases/tag/v0.1.0-access.1).
+The release includes `discord-mcp-0.1.0-access.1-x86_64-pc-windows-msvc.sha256`;
+verify the download against that same release:
 
 ```powershell
 (Get-FileHash .\discord-mcp.exe -Algorithm SHA256).Hash.ToLower()
 ```
 
+The published binary's SHA-256 is
+`55ec0c07da573a3ded997ea78c2a0369a33917273e4cbc3eb6eeb875d073c66f`.
 Do not compare a download with a checksum from a different release.
 
 ## Quick start
