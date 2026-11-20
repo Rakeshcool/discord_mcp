@@ -333,7 +333,7 @@ transport = "stdio"
 
 [policy]
 read_enabled = true
-guild_allowlist = ["1572365819281932408"]   # test_mcp_server
+guild_allowlist = ["<GUILD_ID>"]   # test_mcp_server
 ```
 
 ---
@@ -390,8 +390,8 @@ write_enabled = true
 control_enabled = true
 moderation_enabled = true
 administrative_enabled = true
-channel_allowlist = ["1572365820133118035"]   # #general
-guild_allowlist = ["1572365819281932408"]     # test_mcp_server
+channel_allowlist = ["<CHANNEL_ID>"]   # #general
+guild_allowlist = ["<GUILD_ID>"]     # test_mcp_server
 protected_channels = []                      # e.g. [#announcements ID]
 protected_roles = []                         # e.g. [@admin role ID]
 
@@ -429,7 +429,7 @@ four classes off for the session without editing the file.
 A first call to try — `discord_list_guilds` with no arguments — returns:
 
 ```json
-{"items":[{"id":"1572365819281932408","name":"test_mcp_server","icon_hash":null,"owner":false}],"next_cursor":null}
+{"items":[{"id":"<GUILD_ID>","name":"test_mcp_server","icon_hash":null,"owner":false}],"next_cursor":null}
 ```
 
 `next_cursor` is the value to pass back as `after` for the next page. Read tools
@@ -473,7 +473,7 @@ Full request sequence (Windows PowerShell 5.1; `curl.exe` ships with Windows):
 # JSON string is passed to a native command, so the request arrives malformed.
 Set-Content target\init.json  -NoNewline -Value '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"curl","version":"0.1.0"}}}'
 Set-Content target\ready.json -NoNewline -Value '{"jsonrpc":"2.0","method":"notifications/initialized"}'
-Set-Content target\call.json  -NoNewline -Value '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"discord_get_guild","arguments":{"guild_id":"1572365819281932408"}}}'
+Set-Content target\call.json  -NoNewline -Value '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"discord_get_guild","arguments":{"guild_id":"<GUILD_ID>"}}}'
 
 $url   = "http://127.0.0.1:8787/mcp"
 $token = $env:DISCORD_MCP_HTTP_TOKEN

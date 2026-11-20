@@ -171,7 +171,7 @@ Example under the default configuration:
 
 ```json
 {"server":"discord-mcp","version":"0.1.0",
- "bot":{"id":"1572386219596316742","username":"mcp-test-bot"},
+ "bot":{"id":"<BOT_ID>","username":"mcp-test-bot"},
  "enabled":{"read":true,"write":false,"control":false,"moderation":false,"administrative":false},
  "limits":{"max_actions_per_minute":30,"max_sends_per_channel_per_minute":5,"max_bulk_delete":50,"require_dry_run":[]}}
 ```
@@ -189,7 +189,7 @@ To read the latest messages in a channel:
 3. Call `discord_get_messages` with the channel ID and a `limit`.
 
 ```json
-{"channel_id":"1572365820133118035","limit":20}
+{"channel_id":"<CHANNEL_ID>","limit":20}
 ```
 
 Messages come back newest first. If the page is full, use its `next_cursor` as
@@ -224,7 +224,7 @@ Every change follows four steps:
 Example plan for a bulk delete:
 
 ```json
-{"channel_id":"1572365820133118035","message_ids":["…","…"],"dry_run":true}
+{"channel_id":"<CHANNEL_ID>","message_ids":["…","…"],"dry_run":true}
 ```
 
 A plan returns:

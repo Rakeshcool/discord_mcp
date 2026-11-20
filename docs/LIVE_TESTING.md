@@ -9,9 +9,9 @@ This is a historical record. Current tool behavior is documented in
   server-control build available at the time.
 - **2026-11-20:** Message-analysis scans using the 40-tool build.
 
-Test guild: `test_mcp_server` (`1572365819281932408`).
+Test guild: `test_mcp_server` (`<GUILD_ID>`).
 
-Bot: `mcp-test-bot` (`1572386219596316742`).
+Bot: `mcp-test-bot` (`<BOT_ID>`).
 
 ## Results
 
@@ -30,7 +30,7 @@ message-analysis run used the current 40-tool build.
 
 ## Message-analysis scans
 
-Probes were posted in `#support` (`1572731346550526005`): two attachment
+Probes were posted in `#support` (`<SUPPORT_CHANNEL_ID>`): two attachment
 messages, two text-only messages, two `idiot` messages and two `shut up`
 messages.
 

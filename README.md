@@ -147,9 +147,11 @@ write_enabled = true
 control_enabled = true
 moderation_enabled = true
 administrative_enabled = true
-channel_allowlist = ["1572365820133118035"]
-guild_allowlist = ["1572365819281932408"]
+channel_allowlist = ["<CHANNEL_ID>"]
+guild_allowlist = ["<GUILD_ID>"]
 ```
+
+Replace the placeholders with the channel and guild IDs you intend to allow.
 
 Every mutation except `discord_send_message` accepts `dry_run`, which returns the
 planned action without contacting Discord and without spending budget. Every real

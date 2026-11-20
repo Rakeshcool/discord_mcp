@@ -21,8 +21,10 @@ covers the threat model.
   `failed to deserialize parameters: …` — with no error code, because no tool code
   saw the call. A typo cannot silently fall back to a default.
 - Every ID is a **decimal string**, never a JSON number:
-  `"1572365819281932408"`, not `1572365819281932408`. Discord snowflakes exceed
-  the range JavaScript numbers represent exactly.
+  pass the ID as a quoted string such as `"<GUILD_ID>"`, never as a bare number.
+  Discord snowflakes exceed the range JavaScript numbers represent exactly.
+  `<GUILD_ID>`, `<CHANNEL_ID>`, `<USER_ID>` and `<ROLE_ID>` are placeholders;
+  replace them with your own snowflakes.
 - A successful result is one `text` content block containing JSON. There is no
   `structuredContent`; parse the text.
 - A failure raised by the server is `isError: true`, and its text is
@@ -105,7 +107,7 @@ Guilds the bot is a member of.
 | `after` | string | no | Guild ID cursor from a previous page's `next_cursor` |
 
 ```json
-{"items":[{"id":"1572365819281932408","name":"test_mcp_server","icon_hash":null,"owner":false}],"next_cursor":null}
+{"items":[{"id":"<GUILD_ID>","name":"test_mcp_server","icon_hash":null,"owner":false}],"next_cursor":null}
 ```
 
 `next_cursor` is `null` when Discord's page was not full, otherwise the last
@@ -120,7 +122,7 @@ carry a cursor.
 | `guild_id` | string | yes | Guild ID |
 
 ```json
-{"id":"1572365819281932408","name":"test_mcp_server","icon_hash":null,"description":null,"owner_id":"1572365819281932399","member_count":4}
+{"id":"<GUILD_ID>","name":"test_mcp_server","icon_hash":null,"description":null,"owner_id":"<USER_ID>","member_count":4}
 ```
 
 `description`, `owner_id` and `member_count` are `null` when Discord does not
@@ -135,7 +137,7 @@ Channels in a guild that the bot can see.
 | `guild_id` | string | yes | Guild ID |
 
 ```json
-[{"id":"1572365820133118035","guild_id":"1572365819281932408","name":"general","kind":"text","position":0,"parent_id":null,"topic":"Main chat","nsfw":false}]
+[{"id":"<CHANNEL_ID>","guild_id":"<GUILD_ID>","name":"general","kind":"text","position":0,"parent_id":null,"topic":"Main chat","nsfw":false}]
 ```
 
 `kind` is one of `text`, `voice`, `category`, `announcement`, `forum`, `stage`,
@@ -163,7 +165,7 @@ A page of channel history, newest first.
 | `after` | string | no | Return messages newer than this message ID; passing both `before` and `after` is `INVALID_ARGUMENT` before any request |
 
 ```json
-{"items":[{"id":"1300000000000000001","channel_id":"1572365820133118035","guild_id":"1572365819281932408","author":{"id":"1572365819281932399","username":"example","bot":false},"content":"hello","timestamp":"2026-11-18T09:12:44.000000+00:00","edited_timestamp":null,"attachment_count":0,"embeds":[],"reactions":[],"attachments":[]}],"next_cursor":null}
+{"items":[{"id":"1300000000000000001","channel_id":"<CHANNEL_ID>","guild_id":"<GUILD_ID>","author":{"id":"<USER_ID>","username":"example","bot":false},"content":"hello","timestamp":"2026-11-18T09:12:44.000000+00:00","edited_timestamp":null,"attachment_count":0,"embeds":[],"reactions":[],"attachments":[]}],"next_cursor":null}
 ```
 
 - `content` is `null` for a message with no text, and for every message the bot
@@ -198,7 +200,7 @@ search or a full-history export.
 | `has_attachments` | boolean | no | `true` returns only messages with at least one attachment; `false` only messages without one; omit for both |
 
 ```json
-{"guild_id":"1572365819281932408","user_id":"1572365819281932399","items":[{"id":"1300000000000000001","channel_id":"1572365820133118035","guild_id":"1572365819281932408","author":{"id":"1572365819281932399","username":"example","bot":false},"content":"hello","timestamp":"2026-11-18T09:12:44.000000+00:00","edited_timestamp":null,"attachment_count":0,"embeds":[],"reactions":[],"attachments":[]}],"channels":[{"channel_id":"1572365820133118035","name":"general","kind":"text","scanned":42,"matched":1,"has_more":false}],"scanned_messages":42,"truncated":false,"requests_made":1,"global_truncated":false}
+{"guild_id":"<GUILD_ID>","user_id":"<USER_ID>","items":[{"id":"1300000000000000001","channel_id":"<CHANNEL_ID>","guild_id":"<GUILD_ID>","author":{"id":"<USER_ID>","username":"example","bot":false},"content":"hello","timestamp":"2026-11-18T09:12:44.000000+00:00","edited_timestamp":null,"attachment_count":0,"embeds":[],"reactions":[],"attachments":[]}],"channels":[{"channel_id":"<CHANNEL_ID>","name":"general","kind":"text","scanned":42,"matched":1,"has_more":false}],"scanned_messages":42,"truncated":false,"requests_made":1,"global_truncated":false}
 ```
 
 - Requires **View Channels** and **Read Message History**. Only channels the
@@ -248,7 +250,7 @@ user violated a rule and not an automatic moderation action.
 | `scan_limit` | integer | no | Newest messages inspected **per channel**, 1–1000; default `policy.max_messages_per_read` (100) |
 
 ```json
-{"guild_id":"1572365819281932408","keywords":["idiot","shut up"],"items":[{"id":"1300000000000000002","channel_id":"1572365820133118035","guild_id":"1572365819281932408","author":{"id":"1572365819281932399","username":"example","bot":false},"content":"shut up, idiot","timestamp":"2026-11-18T09:12:44.000000+00:00","edited_timestamp":null,"attachment_count":0,"embeds":[],"reactions":[],"attachments":[],"matched_keywords":["idiot","shut up"]}],"users":[{"user_id":"1572365819281932399","username":"example","matched_messages":1,"matched_keywords":["idiot","shut up"],"channel_ids":["1572365820133118035"]}],"channels":[{"channel_id":"1572365820133118035","name":"general","kind":"text","scanned":42,"matched":1,"has_more":false}],"scanned_messages":42,"truncated":false,"requests_made":1,"global_truncated":false}
+{"guild_id":"<GUILD_ID>","keywords":["idiot","shut up"],"items":[{"id":"1300000000000000002","channel_id":"<CHANNEL_ID>","guild_id":"<GUILD_ID>","author":{"id":"<USER_ID>","username":"example","bot":false},"content":"shut up, idiot","timestamp":"2026-11-18T09:12:44.000000+00:00","edited_timestamp":null,"attachment_count":0,"embeds":[],"reactions":[],"attachments":[],"matched_keywords":["idiot","shut up"]}],"users":[{"user_id":"<USER_ID>","username":"example","matched_messages":1,"matched_keywords":["idiot","shut up"],"channel_ids":["<CHANNEL_ID>"]}],"channels":[{"channel_id":"<CHANNEL_ID>","name":"general","kind":"text","scanned":42,"matched":1,"has_more":false}],"scanned_messages":42,"truncated":false,"requests_made":1,"global_truncated":false}
 ```
 
 - The default list is deliberately conservative: `idiot`, `stupid`, `moron`,
@@ -300,7 +302,7 @@ Guild members.
 | `after` | string | no | User ID cursor from a previous page's `next_cursor` |
 
 ```json
-{"items":[{"user_id":"1572365819281932399","username":"example","nickname":"Example","roles":["1572365819281932400"],"joined_at":"2026-01-04T10:00:00.000000+00:00"}],"next_cursor":null}
+{"items":[{"user_id":"<USER_ID>","username":"example","nickname":"Example","roles":["<ROLE_ID>"],"joined_at":"2026-01-04T10:00:00.000000+00:00"}],"next_cursor":null}
 ```
 
 Requires the privileged **Server Members** (`GUILD_MEMBERS`) intent. Without it
@@ -380,7 +382,7 @@ logged or returned.
 Returns the created message, in the same shape as `discord_get_message`:
 
 ```json
-{"id":"1300000000000000099","channel_id":"1572365820133118035","guild_id":"1572365819281932408","author":{"id":"...","username":"discord-mcp","bot":true},"content":"deploy finished","timestamp":"2026-11-18T09:30:00.000000+00:00","edited_timestamp":null,"attachment_count":0,"embeds":[],"reactions":[],"attachments":[]}
+{"id":"1300000000000000099","channel_id":"<CHANNEL_ID>","guild_id":"<GUILD_ID>","author":{"id":"...","username":"discord-mcp","bot":true},"content":"deploy finished","timestamp":"2026-11-18T09:30:00.000000+00:00","edited_timestamp":null,"attachment_count":0,"embeds":[],"reactions":[],"attachments":[]}
 ```
 
 What applies to every attempt:
